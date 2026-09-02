@@ -5,7 +5,6 @@
 #define UPDATE_MAX_MANIFEST_BYTES 4096U
 #define UPDATE_MAX_IMAGE_BYTES (8U * 1024U * 1024U)
 #define UPDATE_MAX_URL_BYTES 4096U
-#define UPDATE_MAX_REDIRECTS 8U
 #define UPDATE_HTTP_TIMEOUT_SECONDS 30U
 #define UPDATE_DHCP_TIMEOUT_SECONDS 10U
 #define UPDATE_LOCATE_ALL_HANDLES 0U
@@ -363,12 +362,6 @@ static int update_copy(char *destination, const char *source, UINTN capacity) {
     return 1;
 }
 
-static int update_append(char *destination, const char *source, UINTN capacity) {
-    UINTN used = string_length(destination);
-    if (used >= capacity) return 0;
-    return update_copy(destination + used, source, capacity - used);
-}
-
 static int update_ascii_to_wide(const char *source, CHAR16 *destination, UINTN capacity) {
     UINTN index = 0;
     while (source[index]) {
@@ -398,20 +391,6 @@ static int update_url_host(const char *url, char *host, UINTN capacity) {
     return 1;
 }
 
-static int update_resolve_redirect(const char *current, const char *location, char *output, UINTN capacity) {
-    const char *hostEnd;
-    UINTN originLength;
-    if (starts_with(location, "https://")) return update_copy(output, location, capacity);
-    if (location[0] != '/' || !update_https_url(current)) return 0;
-    hostEnd = current + 8;
-    while (*hostEnd && *hostEnd != '/') hostEnd++;
-    originLength = (UINTN)(hostEnd - current);
-    if (originLength + string_length(location) + 1U > capacity) return 0;
-    memory_copy(output, current, originLength);
-    output[originLength] = 0;
-    return update_append(output, location, capacity);
-}
-
 static UINTN update_decimal(const char *text, int *okay) {
     UINTN value = 0;
     *okay = 0;
@@ -426,6 +405,39 @@ static UINTN update_decimal(const char *text, int *okay) {
     }
     *okay = 1;
     return value;
+}
+
+static int update_parse_version(const char *text, UINT32 parts[3]) {
+    UINTN index;
+    for (index = 0; index < 3U; index++) {
+        const char *start = text;
+        UINT32 value = 0;
+        while (*text >= '0' && *text <= '9') {
+            if (value > 999999U / 10U) return 0;
+            value = value * 10U + (UINT32)(*text - '0');
+            if (value > 999999U) return 0;
+            text++;
+        }
+        if (text == start || (text - start > 1 && *start == '0')) return 0;
+        parts[index] = value;
+        if (index < 2U) {
+            if (*text != '.') return 0;
+            text++;
+        } else if (*text) return 0;
+    }
+    return 1;
+}
+
+static int update_compare_versions(const char *left, const char *right) {
+    UINT32 leftParts[3];
+    UINT32 rightParts[3];
+    UINTN index;
+    if (!update_parse_version(left, leftParts) || !update_parse_version(right, rightParts)) return 0;
+    for (index = 0; index < 3U; index++) {
+        if (leftParts[index] < rightParts[index]) return -1;
+        if (leftParts[index] > rightParts[index]) return 1;
+    }
+    return 0;
 }
 
 static int update_hex_digit(char value, UINT8 *digit) {
@@ -784,29 +796,18 @@ cleanup:
     return status;
 }
 
-static EFI_STATUS update_http_fetch(const char *initialUrl, UINT8 *buffer, UINTN capacity, UINTN *received) {
-    char current[UPDATE_MAX_URL_BYTES];
+static EFI_STATUS update_http_fetch(const char *url, UINT8 *buffer, UINTN capacity, UINTN *received) {
     char location[UPDATE_MAX_URL_BYTES];
-    char next[UPDATE_MAX_URL_BYTES];
-    UINTN redirect;
-    if (!update_copy(current, initialUrl, sizeof(current))) return EFI_OUT_OF_RESOURCES;
-    for (redirect = 0; redirect <= UPDATE_MAX_REDIRECTS; redirect++) {
-        EFI_HTTP_STATUS_CODE responseCode;
-        EFI_STATUS status = update_http_fetch_once(current, buffer, capacity, received,
-            &responseCode, location, sizeof(location));
-        if (status != EFI_SUCCESS) return status;
-        if (responseCode == HTTP_STATUS_200_OK) return EFI_SUCCESS;
-        if (!update_http_redirect(responseCode) || redirect == UPDATE_MAX_REDIRECTS ||
-            !update_resolve_redirect(current, location, next, sizeof(next)) || !update_https_url(next)) {
-            return EFI_SECURITY_VIOLATION;
-        }
-        if (!update_copy(current, next, sizeof(current))) return EFI_OUT_OF_RESOURCES;
-    }
-    return EFI_ABORTED;
+    EFI_HTTP_STATUS_CODE responseCode;
+    EFI_STATUS status = update_http_fetch_once(url, buffer, capacity, received,
+        &responseCode, location, sizeof(location));
+    if (status != EFI_SUCCESS) return status;
+    return responseCode == HTTP_STATUS_200_OK ? EFI_SUCCESS : EFI_SECURITY_VIOLATION;
 }
 
 static int update_parse_manifest(char *text, UINTN bytes, UPDATE_MANIFEST *manifest) {
     char *cursor = text;
+    UINT32 versionParts[3];
     int haveVersion = 0;
     int haveSize = 0;
     int haveDigest = 0;
@@ -828,7 +829,8 @@ static int update_parse_manifest(char *text, UINTN bytes, UPDATE_MANIFEST *manif
         if (*equals != '=') return 0;
         *equals++ = 0;
         if (streq(line, "version")) {
-            if (haveVersion || !update_copy(manifest->version, equals, sizeof(manifest->version))) return 0;
+            if (haveVersion || !update_parse_version(equals, versionParts) ||
+                !update_copy(manifest->version, equals, sizeof(manifest->version))) return 0;
             haveVersion = 1;
         } else if (streq(line, "size")) {
             int okay;
@@ -1036,9 +1038,16 @@ static void command_update(int checkOnly) {
     print(" (current ");
     print(TINYARMOS_VERSION);
     print(")\n");
-    if (streq(manifest.version, TINYARMOS_VERSION)) {
-        print("TinyArmOS is up to date.\n");
-        goto cleanup;
+    {
+        int versionOrder = update_compare_versions(manifest.version, TINYARMOS_VERSION);
+        if (versionOrder == 0) {
+            print("TinyArmOS is up to date.\n");
+            goto cleanup;
+        }
+        if (versionOrder < 0) {
+            print("The update channel is older; refusing a rollback.\n");
+            goto cleanup;
+        }
     }
     if (checkOnly) {
         print("Update available. Run 'update' to install it.\n");

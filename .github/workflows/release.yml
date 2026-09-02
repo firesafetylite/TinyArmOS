@@ -96,6 +96,16 @@ jobs:
           cp build/BOOTAA64.EFI "dist/${efi_name}"
           cp build/TinyArmOS-UTM.img "dist/TinyArmOS-${tag}-UTM.img"
           cp -R build/TinyArmOS.utm "dist/TinyArmOS-${tag}.utm"
+          mkdir -p "dist/TinyArmOS-${tag}.utm/Licenses"
+          cp LICENSE "dist/TinyArmOS-${tag}.utm/Licenses/TinyArmOS-GPL-2.0-only.txt"
+          cp THIRD_PARTY_NOTICES.md "dist/TinyArmOS-${tag}.utm/Licenses/"
+          cp firmware/licenses/*.txt "dist/TinyArmOS-${tag}.utm/Licenses/"
+          cp third_party/PureDOOM/LICENSE "dist/TinyArmOS-${tag}.utm/Licenses/PureDOOM-GPL-2.0.txt"
+          cp assets/FREEDOOM-COPYING.txt \
+            assets/FREEDOOM-CREDITS.txt \
+            assets/FREEDOOM-CREDITS-MUSIC.txt \
+            assets/FREEDOOM-README.html \
+            "dist/TinyArmOS-${tag}.utm/Licenses/"
           (
             cd dist
             zip -9 -r "TinyArmOS-${tag}-UTM.utm.zip" "TinyArmOS-${tag}.utm"
@@ -103,6 +113,9 @@ jobs:
           )
           zip -9 "dist/TinyArmOS-${tag}-LICENSES.zip" \
             LICENSE THIRD_PARTY_NOTICES.md \
+            firmware/licenses/EDK2-LICENSE.txt \
+            firmware/licenses/LIBFDT-LICENSE.txt \
+            firmware/licenses/OPENSSL-LICENSE.txt \
             third_party/PureDOOM/LICENSE \
             assets/FREEDOOM-COPYING.txt \
             assets/FREEDOOM-CREDITS.txt \

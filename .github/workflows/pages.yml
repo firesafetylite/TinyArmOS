@@ -20,7 +20,7 @@ permissions:
 
 concurrency:
   group: github-pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   publish:
@@ -39,8 +39,12 @@ jobs:
         run: |
           set -euo pipefail
           tag="$REQUESTED_TAG"
+          latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
           if [[ -z "$tag" ]]; then
-            tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+            tag="$latest_tag"
+          elif [[ "$tag" != "$latest_tag" ]]; then
+            echo "Refusing to publish non-latest release $tag (latest is $latest_tag)." >&2
+            exit 1
           fi
           mkdir -p release public
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" \

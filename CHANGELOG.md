@@ -2,6 +2,24 @@
 
 Notable changes to TinyArmOS are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic versioning for releases.
 
+## [0.6.0] - 2026-09-02
+
+### Added
+
+- Pinned EDK2 firmware in UTM releases with IPv4, DNS, HTTP, TLS, VirtIO networking, and VirtIO RNG.
+- A redirect-free GitHub Pages channel for the latest strict update manifest and checksum-verified ARM64 EFI image.
+- UTM Shared Network address and DNS fallback when firmware DHCP cannot obtain a lease.
+
+### Changed
+
+- Increased generated UTM bundles to 256 MiB RAM for firmware TLS workloads.
+- Release builds now require and validate both custom pflash images and all updater firmware drivers.
+
+### Security
+
+- Enabled ECDHE and protocol-backed entropy for UEFI TLS, with a pinned three-root trust store.
+- Reject malformed semantic versions and downgrade manifests before downloading an update.
+
 ## [0.5.0] - 2026-09-02
 
 ### Added
@@ -26,6 +44,7 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 - Shell navigation, file-management commands, and 256-line scrollback.
 - Source builders for a bootable GPT/FAT32 image and UTM bundle.
 
+[0.6.0]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.6.0
 [0.5.0]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.5.0
 [0.4.1]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.4.1
 [0.4.0]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.4.0
