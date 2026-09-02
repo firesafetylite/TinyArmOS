@@ -36,13 +36,15 @@ def fake_efi(version: str, size: int = 4096) -> bytes:
 
 class UpdaterTests(unittest.TestCase):
     def test_version_and_efi_validation(self) -> None:
-        image = fake_efi("1.2.3")
-        self.assertEqual(UPDATER["version_tuple"]("1.2.3"), (1, 2, 3))
-        self.assertEqual(UPDATER["validate_efi"](image, "1.2.3"), "1.2.3")
+        image = fake_efi("0.1")
+        self.assertEqual(UPDATER["version_tuple"]("0.1"), (0, 1, 0))
+        self.assertEqual(UPDATER["version_tuple"]("0.1.1"), (0, 1, 1))
+        self.assertEqual(UPDATER["version_tuple"]("0.1.12"), (0, 1, 12))
+        self.assertEqual(UPDATER["validate_efi"](image, "0.1"), "0.1")
         with self.assertRaises(UPDATER["UpdateError"]):
-            UPDATER["version_tuple"]("01.2.3")
+            UPDATER["version_tuple"]("00.1")
         with self.assertRaises(UPDATER["UpdateError"]):
-            UPDATER["validate_efi"](image, "1.2.4")
+            UPDATER["validate_efi"](image, "0.1.1")
 
     def test_github_host_allowlist(self) -> None:
         self.assertTrue(UPDATER["github_host"]("github.com"))

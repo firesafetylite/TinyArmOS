@@ -1,4 +1,4 @@
-# TinyArmOS v0.6.0
+# TinyArmOS v0.1
 
 [![CI](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml/badge.svg)](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/firesafetylite/TinyArmOS?display_name=tag)](https://github.com/firesafetylite/TinyArmOS/releases/latest)
@@ -8,9 +8,9 @@ TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a pers
 
 ## Download and run in UTM
 
-For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.6.0-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, custom UEFI firmware, 256 MiB RAM, VirtIO networking and RNG, and a graphical console. UTM on Apple silicon is the primary run environment. The archive also contains the `tinyarmos` host command as an update fallback.
+For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.1-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, custom UEFI firmware, 256 MiB RAM, VirtIO networking and RNG, and a graphical console. UTM on Apple silicon is the primary run environment. The archive also contains the `tinyarmos` host command as an update fallback.
 
-The release also provides `TinyArmOS-v0.6.0-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.6.0-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
+The release also provides `TinyArmOS-v0.1-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.1-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
 
 The disk image's FAT32 EFI System Partition contains:
 
@@ -213,7 +213,7 @@ The in-OS updater uses the bundled firmware's UEFI HTTP/TLS service with IPv4 DH
 If the VM cannot reach the update channel, shut it down and use the included host fallback:
 
 ```bash
-./tinyarmos update TinyArmOS-v0.6.0.utm
+./tinyarmos update TinyArmOS-v0.1.utm
 ```
 
 The host command uses the host's maintained HTTPS stack and updates only `EFI/BOOT/BOOTAA64.EFI`, preserving MiniFS snapshots, user files, and Freedoom. Keep the VM stopped while using it.

@@ -420,12 +420,15 @@ static int update_parse_version(const char *text, UINT32 parts[3]) {
         }
         if (text == start || (text - start > 1 && *start == '0')) return 0;
         parts[index] = value;
-        if (index < 2U) {
-            if (*text != '.') return 0;
-            text++;
-        } else if (*text) return 0;
+        if (!*text) {
+            if (index == 0U) return 0;
+            while (++index < 3U) parts[index] = 0;
+            return 1;
+        }
+        if (index == 2U || *text != '.') return 0;
+        text++;
     }
-    return 1;
+    return 0;
 }
 
 static int update_compare_versions(const char *left, const char *right) {
@@ -703,7 +706,7 @@ static EFI_STATUS update_http_fetch_once(const char *url, UINT8 *buffer, UINTN c
     requestHeaders[0].FieldName = "Host";
     requestHeaders[0].FieldValue = host;
     requestHeaders[1].FieldName = "User-Agent";
-    requestHeaders[1].FieldValue = "TinyArmOS-Updater/0.6";
+    requestHeaders[1].FieldValue = "TinyArmOS-Updater/0.1";
     requestHeaders[2].FieldName = "Accept";
     requestHeaders[2].FieldValue = "application/octet-stream";
     requestHeaders[3].FieldName = "Connection";

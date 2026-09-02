@@ -27,14 +27,16 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 REPOSITORY = "firesafetylite/TinyArmOS"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
-USER_AGENT = "TinyArmOS-Host-Updater/1"
+USER_AGENT = "TinyArmOS-Host-Updater/0.1"
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_EFI_BYTES = 16 * 1024 * 1024
 ESP_TYPE = uuid.UUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
-VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+VERSION_RE = re.compile(
+    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?"
+)
 VERSION_MARKER_RE = re.compile(
-    rb"TinyArmOS ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
-    rb"\narchitecture=ARM64\nfirmware=UEFI"
+    rb"TinyArmOS ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    rb"(?:\.(?:0|[1-9][0-9]*))?)\narchitecture=ARM64\nfirmware=UEFI"
 )
 BOOT_PATH = (b"EFI        ", b"BOOT       ", b"BOOTAA64EFI")
 
@@ -57,7 +59,8 @@ def version_tuple(text: str) -> Tuple[int, int, int]:
     match = VERSION_RE.fullmatch(text)
     if not match:
         raise UpdateError(f"invalid TinyArmOS version: {text!r}")
-    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+    major, minor, patch = match.groups()
+    return int(major), int(minor), int(patch or 0)
 
 
 def embedded_version(image: bytes) -> str:
