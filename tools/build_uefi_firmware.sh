@@ -28,6 +28,7 @@ test "$(git rev-parse HEAD)" = "$edk2_commit"
 python3 "$repo_root/tools/make_uefi_ca_bundle.py" \
   "$work/TinyArmOS-ca-certs.esl" \
   OvmfPkg/Library/TlsAuthConfigLib/TinyArmCaCerts.inc \
+  "$repo_root/firmware/certs/usertrust-rsa-certification-authority.pem" \
   "$repo_root/firmware/certs/usertrust-ecc-certification-authority.pem" \
   "$repo_root/firmware/certs/isrg-root-x1.pem"
 

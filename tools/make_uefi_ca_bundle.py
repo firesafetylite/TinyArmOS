@@ -14,6 +14,8 @@ from pathlib import Path
 EFI_CERT_X509_GUID = uuid.UUID("a5c059a1-94e4-4aa7-87b5-ab155c2bf072")
 SIGNATURE_OWNER_GUID = uuid.UUID("e056959d-53d4-4c21-9ff4-61726d363475")
 EXPECTED_SHA256 = {
+    "usertrust-rsa-certification-authority.pem":
+        "e793c9b02fd8aa13e21c31228accb08119643b749c898964b1746d46c3d4cbd2",
     "usertrust-ecc-certification-authority.pem":
         "4ff460d54b9c86dabfbcfc5712e0400d2bed3fbc4d4fbdaa86e06adcd2a9ad7a",
     "isrg-root-x1.pem":
