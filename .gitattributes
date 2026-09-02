@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.plist text eol=lf
+
+*.wad binary
+*.efi binary
+*.img binary
+*.zip binary
+
+third_party/PureDOOM/** linguist-vendored
+assets/FREEDOOM-* linguist-vendored

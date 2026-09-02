@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ARM64 UEFI artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Zig toolchain
+        run: |
+          python -m pip install --disable-pip-version-check ziglang==0.14.1
+          python -m ziglang version
+
+      - name: Build
+        run: make
+
+      - name: Verify build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s build/BOOTAA64.EFI
+          test "$(stat -c '%s' build/TinyArmOS-UTM.img)" -eq 67108864
+          test -f build/TinyArmOS.utm/config.plist
+          test -f build/TinyArmOS.utm/Images/disk-0.img
+          cmp build/TinyArmOS-UTM.img build/TinyArmOS.utm/Images/disk-0.img
+          file build/BOOTAA64.EFI | grep -Eq 'PE32\+ executable.*Aarch64'
+          python - <<'PY'
+          import plistlib
+          from pathlib import Path
+
+          image = Path("build/TinyArmOS-UTM.img").read_bytes()
+          assert image[512:520] == b"EFI PART"
+          assert image[2048 * 512 + 82:2048 * 512 + 90] == b"FAT32   "
+          with Path("build/TinyArmOS.utm/config.plist").open("rb") as stream:
+              config = plistlib.load(stream)
+          assert config["System"]["Architecture"] == "aarch64"
+          assert config["System"]["BootUefi"] is True
+          assert config["Drives"][0]["ImagePath"] == "disk-0.img"
+          PY
