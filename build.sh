@@ -23,8 +23,9 @@ fi
 
 python3 tools/make_utm_image.py build/BOOTAA64.EFI build/TinyArmOS-UTM.img assets/freedoom1.wad
 firmware="${TINYARMOS_UEFI_FIRMWARE:-build/TinyArmOS-QEMU_EFI.fd}"
-if [[ -f "$firmware" ]]; then
-  python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm "$firmware"
+variables="${TINYARMOS_UEFI_VARIABLES:-${firmware%.fd}-vars.fd}"
+if [[ -f "$firmware" && -f "$variables" ]]; then
+  python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm "$firmware" "$variables"
 else
   python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm
 fi

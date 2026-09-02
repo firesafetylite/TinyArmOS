@@ -114,9 +114,13 @@ build -a AARCH64 -t GCC5 -b RELEASE -p ArmVirtPkg/ArmVirtQemu.dsc \
   -D NETWORK_IP6_ENABLE=FALSE \
   -D NETWORK_PXE_BOOT_ENABLE=FALSE
 
-firmware=Build/ArmVirtQemu-AArch64/RELEASE_GCC5/FV/QEMU_EFI.fd
+firmware=Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/QEMU_EFI.fd
+variables=Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/QEMU_VARS.fd
 test -s "$firmware"
+test -s "$variables"
 mkdir -p "$(dirname "$output")"
 cp "$firmware" "$output"
+truncate -s 67108864 "$output"
+cp "$variables" "${output%.fd}-vars.fd"
 cp "$work/TinyArmOS-ca-certs.esl" "${output%.fd}-ca-certs.esl"
-sha256sum "$output" "${output%.fd}-ca-certs.esl"
+sha256sum "$output" "${output%.fd}-vars.fd" "${output%.fd}-ca-certs.esl"

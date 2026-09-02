@@ -10,39 +10,52 @@ from pathlib import Path
 
 
 def main() -> None:
-    if len(sys.argv) not in (3, 4):
-        print(f"usage: {sys.argv[0]} DISK.img OUTPUT.utm [UEFI_FIRMWARE.fd]", file=sys.stderr)
+    if len(sys.argv) not in (3, 5):
+        print(
+            f"usage: {sys.argv[0]} DISK.img OUTPUT.utm [UEFI_CODE.fd UEFI_VARS.fd]",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
     disk = Path(sys.argv[1]).resolve()
     bundle = Path(sys.argv[2]).resolve()
-    firmware = Path(sys.argv[3]).resolve() if len(sys.argv) == 4 else None
-    if firmware is not None and not firmware.is_file():
-        raise FileNotFoundError(firmware)
+    firmware = Path(sys.argv[3]).resolve() if len(sys.argv) == 5 else None
+    variables = Path(sys.argv[4]).resolve() if len(sys.argv) == 5 else None
+    for image in (firmware, variables):
+        if image is not None and not image.is_file():
+            raise FileNotFoundError(image)
     if bundle.exists():
         shutil.rmtree(bundle)
     images = bundle / "Images"
     images.mkdir(parents=True)
     shutil.copyfile(disk, images / "disk-0.img")
-    if firmware is not None:
-        shutil.copyfile(firmware, images / "tinyarmos-uefi.fd")
+    if firmware is not None and variables is not None:
+        shutil.copyfile(firmware, images / "tinyarmos-uefi-code.fd")
+        shutil.copyfile(variables, images / "tinyarmos-uefi-vars.fd")
 
-    drives = [
-        {
-            "ImagePath": "disk-0.img",
-            "ImageType": "disk",
-            "InterfaceType": "virtio",
-            "Removable": False,
-        }
-    ]
+    disk_drive = {
+        "ImagePath": "disk-0.img",
+        "ImageType": "disk",
+        "InterfaceType": "virtio",
+        "Removable": False,
+    }
     if firmware is not None:
-        drives.append(
+        drives = [
             {
-                "ImagePath": "tinyarmos-uefi.fd",
-                "ImageType": "bios",
-                "InterfaceType": "none",
+                "ImagePath": "tinyarmos-uefi-code.fd",
+                "ImageType": "disk",
+                "InterfaceType": "pflash",
                 "Removable": False,
-            }
-        )
+            },
+            {
+                "ImagePath": "tinyarmos-uefi-vars.fd",
+                "ImageType": "disk",
+                "InterfaceType": "pflash",
+                "Removable": False,
+            },
+            disk_drive,
+        ]
+    else:
+        drives = [disk_drive]
 
     # UTM's current releases migrate this stable version-2 QEMU schema on import.
     config = {
