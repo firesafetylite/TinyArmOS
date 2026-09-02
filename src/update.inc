@@ -1,7 +1,7 @@
 // TinyArmOS firmware-backed HTTPS updater.
 // Uses UEFI HTTP/TLS services supplied by the VM firmware.
 
-#define UPDATE_MANIFEST_URL "https://github.com/firesafetylite/TinyArmOS/releases/latest/download/TinyArmOS-update.txt"
+#define UPDATE_MANIFEST_URL "https://firesafetylite.github.io/TinyArmOS/TinyArmOS-update.txt"
 #define UPDATE_MAX_MANIFEST_BYTES 4096U
 #define UPDATE_MAX_IMAGE_BYTES (8U * 1024U * 1024U)
 #define UPDATE_MAX_URL_BYTES 4096U

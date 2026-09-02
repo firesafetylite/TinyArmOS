@@ -114,7 +114,7 @@ jobs:
           version=${version}
           size=${efi_size}
           sha256=${efi_sha256}
-          url=https://github.com/firesafetylite/TinyArmOS/releases/download/${tag}/${efi_name}
+          url=https://firesafetylite.github.io/TinyArmOS/TinyArmOS-latest-BOOTAA64.EFI
           EOF
           (
             cd dist
