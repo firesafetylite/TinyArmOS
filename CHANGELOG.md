@@ -2,6 +2,17 @@
 
 Notable changes to TinyArmOS are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic versioning for releases.
 
+## [Unreleased]
+
+### Added
+
+- A standard-library `tinyarmos update` host command that checks GitHub Releases, verifies the ARM64 EFI asset, preserves MiniFS data, and creates a disk backup.
+- Unit coverage for version checks, EFI validation, checksum parsing, FAT32 replacement, data preservation, and UTM target resolution.
+
+### Removed
+
+- The in-guest firmware HTTP/TLS updater, custom network firmware, guest network device, certificate bundle, and GitHub Pages update channel.
+
 ## [0.6.0] - 2026-09-02
 
 ### Added

@@ -1,5 +1,8 @@
-# Generated build outputs
+# Generated build outputs and updater backups
 /build/
+*.img.bak
+*.EFI.bak
+*.efi.bak
 
 # Python caches and local environments
 __pycache__/

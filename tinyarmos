@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""TinyArmOS host command.
+
+The guest has no network stack. ``tinyarmos update`` uses the host's HTTPS
+support to fetch a GitHub Release and replaces only EFI/BOOT/BOOTAA64.EFI in
+the TinyArmOS disk, preserving MiniFS snapshots and other files.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import re
+import shutil
+import struct
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+REPOSITORY = "firesafetylite/TinyArmOS"
+LATEST_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+USER_AGENT = "TinyArmOS-Host-Updater/1"
+MAX_METADATA_BYTES = 1024 * 1024
+MAX_EFI_BYTES = 16 * 1024 * 1024
+ESP_TYPE = uuid.UUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
+VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+VERSION_MARKER_RE = re.compile(
+    rb"TinyArmOS ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
+    rb"\narchitecture=ARM64\nfirmware=UEFI"
+)
+BOOT_PATH = (b"EFI        ", b"BOOT       ", b"BOOTAA64EFI")
+
+
+class UpdateError(RuntimeError):
+    """An expected, user-facing update failure."""
+
+
+def github_host(hostname: Optional[str]) -> bool:
+    return bool(
+        hostname
+        and (
+            hostname in {"github.com", "api.github.com"}
+            or hostname.endswith(".githubusercontent.com")
+        )
+    )
+
+
+def version_tuple(text: str) -> Tuple[int, int, int]:
+    match = VERSION_RE.fullmatch(text)
+    if not match:
+        raise UpdateError(f"invalid TinyArmOS version: {text!r}")
+    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+
+
+def embedded_version(image: bytes) -> str:
+    matches = {match.group(1).decode("ascii") for match in VERSION_MARKER_RE.finditer(image)}
+    if len(matches) != 1:
+        raise UpdateError("could not identify exactly one TinyArmOS version in the EFI image")
+    return matches.pop()
+
+
+def validate_efi(image: bytes, expected_version: Optional[str] = None) -> str:
+    if not 512 <= len(image) <= MAX_EFI_BYTES or image[:2] != b"MZ":
+        raise UpdateError("download is not a bounded PE/EFI image")
+    pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+    if pe_offset + 96 > len(image) or image[pe_offset : pe_offset + 4] != b"PE\0\0":
+        raise UpdateError("download has an invalid PE header")
+    machine, _, _, _, _, optional_size = struct.unpack_from("<HHIIIH", image, pe_offset + 4)
+    optional_offset = pe_offset + 24
+    if machine != 0xAA64:
+        raise UpdateError("download is not an ARM64 image")
+    if optional_size < 70 or optional_offset + optional_size > len(image):
+        raise UpdateError("download has an invalid PE optional header")
+    if struct.unpack_from("<H", image, optional_offset)[0] != 0x20B:
+        raise UpdateError("download is not a PE32+ image")
+    if struct.unpack_from("<H", image, optional_offset + 68)[0] != 10:
+        raise UpdateError("download is not an EFI application")
+    version = embedded_version(image)
+    if expected_version is not None and version != expected_version:
+        raise UpdateError(
+            f"release tag says {expected_version}, but the EFI image says {version}"
+        )
+    return version
+
+
+def https_get(url: str, limit: int, accept: str) -> bytes:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not github_host(parsed.hostname):
+        raise UpdateError("refusing a download outside GitHub HTTPS hosts")
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": accept,
+            "User-Agent": USER_AGENT,
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            final_url = urllib.parse.urlsplit(response.geturl())
+            if final_url.scheme != "https" or not github_host(final_url.hostname):
+                raise UpdateError("refusing a redirect outside GitHub HTTPS hosts")
+            length = response.headers.get("Content-Length")
+            if length is not None and int(length) > limit:
+                raise UpdateError("GitHub response is larger than the allowed limit")
+            data = response.read(limit + 1)
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        if isinstance(error, UpdateError):
+            raise
+        raise UpdateError(f"GitHub request failed: {error}") from error
+    if len(data) > limit:
+        raise UpdateError("GitHub response is larger than the allowed limit")
+    return data
+
+
+def release_assets() -> Tuple[str, Dict[str, dict]]:
+    raw = https_get(LATEST_RELEASE_URL, MAX_METADATA_BYTES, "application/vnd.github+json")
+    try:
+        release = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise UpdateError("GitHub returned invalid release metadata") from error
+    if not isinstance(release, dict) or release.get("draft") is True:
+        raise UpdateError("GitHub returned an invalid latest release")
+    tag = release.get("tag_name")
+    if not isinstance(tag, str) or not tag.startswith("v"):
+        raise UpdateError("the latest GitHub Release has no valid version tag")
+    version = tag[1:]
+    version_tuple(version)
+    expected_efi = f"TinyArmOS-{tag}-BOOTAA64.EFI"
+    assets: Dict[str, dict] = {}
+    for asset in release.get("assets", []):
+        if not isinstance(asset, dict):
+            continue
+        name = asset.get("name")
+        url = asset.get("browser_download_url")
+        size = asset.get("size")
+        if not isinstance(name, str) or not isinstance(url, str) or not isinstance(size, int):
+            continue
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != "https" or parsed.hostname != "github.com":
+            continue
+        assets[name] = asset
+    for required in (expected_efi, "SHA256SUMS"):
+        if required not in assets:
+            raise UpdateError(f"latest GitHub Release is missing {required}")
+    if not 512 <= assets[expected_efi]["size"] <= MAX_EFI_BYTES:
+        raise UpdateError("latest EFI release asset has an invalid size")
+    return version, assets
+
+
+def checksum_for(text: bytes, filename: str) -> str:
+    try:
+        lines = text.decode("ascii").splitlines()
+    except UnicodeDecodeError as error:
+        raise UpdateError("SHA256SUMS is not ASCII") from error
+    checksums: Dict[str, str] = {}
+    for line in lines:
+        match = re.fullmatch(r"([0-9a-fA-F]{64}) [ *](.+)", line)
+        if not match:
+            raise UpdateError("SHA256SUMS has invalid syntax")
+        digest, name = match.groups()
+        if name in checksums:
+            raise UpdateError(f"SHA256SUMS contains duplicate entry {name!r}")
+        checksums[name] = digest.lower()
+    if filename not in checksums:
+        raise UpdateError(f"SHA256SUMS has no entry for {filename}")
+    return checksums[filename]
+
+
+class Fat32Image:
+    """Minimal FAT32 reader/editor for the generated TinyArmOS ESP."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = bytearray(data)
+        self.partition_lba = self._find_esp()
+        self.volume_offset = self.partition_lba * 512
+        if self.data[self.volume_offset + 82 : self.volume_offset + 90] != b"FAT32   ":
+            raise UpdateError("EFI System Partition is not FAT32")
+        self.bytes_per_sector = self._u16(self.volume_offset + 11)
+        self.sectors_per_cluster = self.data[self.volume_offset + 13]
+        self.reserved_sectors = self._u16(self.volume_offset + 14)
+        self.fat_count = self.data[self.volume_offset + 16]
+        self.total_sectors = self._u32(self.volume_offset + 32)
+        self.fat_sectors = self._u32(self.volume_offset + 36)
+        self.root_cluster = self._u32(self.volume_offset + 44)
+        if (
+            self.bytes_per_sector != 512
+            or not self.sectors_per_cluster
+            or not self.fat_count
+            or not self.fat_sectors
+            or self.root_cluster < 2
+        ):
+            raise UpdateError("unsupported FAT32 layout")
+        self.cluster_bytes = self.bytes_per_sector * self.sectors_per_cluster
+        self.fat_offset = self.volume_offset + self.reserved_sectors * self.bytes_per_sector
+        data_sectors = self.total_sectors - self.reserved_sectors - self.fat_count * self.fat_sectors
+        self.cluster_count = data_sectors // self.sectors_per_cluster
+        self.data_offset = (
+            self.volume_offset
+            + (self.reserved_sectors + self.fat_count * self.fat_sectors)
+            * self.bytes_per_sector
+        )
+        if self.data_offset + self.cluster_count * self.cluster_bytes > len(self.data):
+            raise UpdateError("FAT32 partition extends beyond the disk image")
+
+    def _u16(self, offset: int) -> int:
+        return struct.unpack_from("<H", self.data, offset)[0]
+
+    def _u32(self, offset: int) -> int:
+        return struct.unpack_from("<I", self.data, offset)[0]
+
+    def _find_esp(self) -> int:
+        if len(self.data) < 1024 or self.data[512:520] != b"EFI PART":
+            raise UpdateError("target is not a GPT disk image")
+        entries_lba = struct.unpack_from("<Q", self.data, 512 + 72)[0]
+        entry_count = struct.unpack_from("<I", self.data, 512 + 80)[0]
+        entry_size = struct.unpack_from("<I", self.data, 512 + 84)[0]
+        if not entry_size or entry_size < 128 or entry_count > 4096:
+            raise UpdateError("target has an invalid GPT partition table")
+        entries_offset = entries_lba * 512
+        for index in range(entry_count):
+            offset = entries_offset + index * entry_size
+            if offset + entry_size > len(self.data):
+                break
+            if self.data[offset : offset + 16] == ESP_TYPE.bytes_le:
+                first_lba = struct.unpack_from("<Q", self.data, offset + 32)[0]
+                if first_lba:
+                    return first_lba
+        raise UpdateError("target has no EFI System Partition")
+
+    def _cluster_offset(self, cluster: int) -> int:
+        if cluster < 2 or cluster >= self.cluster_count + 2:
+            raise UpdateError("FAT32 cluster is out of range")
+        return self.data_offset + (cluster - 2) * self.cluster_bytes
+
+    def _fat_get(self, cluster: int) -> int:
+        return self._u32(self.fat_offset + cluster * 4) & 0x0FFFFFFF
+
+    def _fat_set(self, cluster: int, value: int) -> None:
+        for fat_index in range(self.fat_count):
+            offset = (
+                self.fat_offset
+                + fat_index * self.fat_sectors * self.bytes_per_sector
+                + cluster * 4
+            )
+            previous = self._u32(offset)
+            struct.pack_into("<I", self.data, offset, (previous & 0xF0000000) | value)
+
+    def _chain(self, first_cluster: int) -> List[int]:
+        if first_cluster == 0:
+            return []
+        chain: List[int] = []
+        seen = set()
+        cluster = first_cluster
+        while True:
+            if cluster in seen or cluster < 2 or cluster >= self.cluster_count + 2:
+                raise UpdateError("FAT32 file has a corrupt cluster chain")
+            chain.append(cluster)
+            seen.add(cluster)
+            next_cluster = self._fat_get(cluster)
+            if next_cluster >= 0x0FFFFFF8:
+                return chain
+            if next_cluster == 0:
+                raise UpdateError("FAT32 file has a truncated cluster chain")
+            cluster = next_cluster
+
+    def _directory_entries(self, cluster: int) -> Iterable[Tuple[int, bytes]]:
+        for directory_cluster in self._chain(cluster):
+            base = self._cluster_offset(directory_cluster)
+            for relative in range(0, self.cluster_bytes, 32):
+                offset = base + relative
+                entry = bytes(self.data[offset : offset + 32])
+                if entry[0] == 0:
+                    return
+                if entry[0] == 0xE5 or entry[11] == 0x0F:
+                    continue
+                yield offset, entry
+
+    @staticmethod
+    def _entry_cluster(entry: bytes) -> int:
+        high = struct.unpack_from("<H", entry, 20)[0]
+        low = struct.unpack_from("<H", entry, 26)[0]
+        return (high << 16) | low
+
+    def _find_entry(self, path: Sequence[bytes]) -> Tuple[int, bytes]:
+        directory_cluster = self.root_cluster
+        for index, name in enumerate(path):
+            if len(name) != 11:
+                raise ValueError("FAT path components must use 8.3 names")
+            found: Optional[Tuple[int, bytes]] = None
+            for offset, entry in self._directory_entries(directory_cluster):
+                if entry[:11] == name:
+                    found = (offset, entry)
+                    break
+            if found is None:
+                display = name.decode("ascii", "replace").rstrip()
+                raise UpdateError(f"disk image is missing {display}")
+            if index + 1 < len(path):
+                if not found[1][11] & 0x10:
+                    raise UpdateError("FAT path component is not a directory")
+                directory_cluster = self._entry_cluster(found[1])
+            else:
+                return found
+        raise ValueError("empty FAT path")
+
+    def read_file(self, path: Sequence[bytes]) -> bytes:
+        _, entry = self._find_entry(path)
+        if entry[11] & 0x10:
+            raise UpdateError("requested FAT path is a directory")
+        size = struct.unpack_from("<I", entry, 28)[0]
+        chain = self._chain(self._entry_cluster(entry))
+        if size > len(chain) * self.cluster_bytes:
+            raise UpdateError("FAT32 file size exceeds its cluster chain")
+        chunks = []
+        for cluster in chain:
+            offset = self._cluster_offset(cluster)
+            chunks.append(bytes(self.data[offset : offset + self.cluster_bytes]))
+        return b"".join(chunks)[:size]
+
+    def replace_file(self, path: Sequence[bytes], payload: bytes) -> None:
+        if not payload:
+            raise UpdateError("refusing to install an empty EFI image")
+        entry_offset, entry = self._find_entry(path)
+        old_chain = self._chain(self._entry_cluster(entry))
+        needed = math.ceil(len(payload) / self.cluster_bytes)
+        chain = old_chain[:needed]
+        if len(chain) < needed:
+            required = needed - len(chain)
+            free = [
+                cluster
+                for cluster in range(2, self.cluster_count + 2)
+                if self._fat_get(cluster) == 0
+            ][:required]
+            if len(free) != required:
+                raise UpdateError("not enough free space in the TinyArmOS disk image")
+            chain.extend(free)
+        for index, cluster in enumerate(chain):
+            next_cluster = chain[index + 1] if index + 1 < len(chain) else 0x0FFFFFFF
+            self._fat_set(cluster, next_cluster)
+            offset = self._cluster_offset(cluster)
+            chunk = payload[index * self.cluster_bytes : (index + 1) * self.cluster_bytes]
+            self.data[offset : offset + self.cluster_bytes] = chunk.ljust(
+                self.cluster_bytes, b"\0"
+            )
+        for cluster in old_chain[needed:]:
+            self._fat_set(cluster, 0)
+        first_cluster = chain[0]
+        struct.pack_into("<H", self.data, entry_offset + 20, first_cluster >> 16)
+        struct.pack_into("<H", self.data, entry_offset + 26, first_cluster & 0xFFFF)
+        struct.pack_into("<I", self.data, entry_offset + 28, len(payload))
+
+
+def target_disk(path: Path) -> Tuple[str, Path]:
+    path = path.expanduser().resolve()
+    if path.is_dir() and path.suffix.lower() == ".utm":
+        disk = path / "Images" / "disk-0.img"
+        if not disk.is_file():
+            raise UpdateError(f"UTM bundle has no Images/disk-0.img: {path}")
+        return "disk", disk
+    if path.is_file() and path.suffix.lower() == ".img":
+        return "disk", path
+    if path.is_file() and path.suffix.lower() == ".efi":
+        return "efi", path
+    raise UpdateError("target must be a TinyArmOS .utm bundle, .img disk, or .EFI file")
+
+
+def discover_target() -> Path:
+    candidates: List[Path] = []
+    search_roots = [Path.cwd(), Path(__file__).resolve().parent]
+    build_bundle = Path(__file__).resolve().parent / "build" / "TinyArmOS.utm"
+    if build_bundle.is_dir():
+        candidates.append(build_bundle)
+    for root in search_roots:
+        candidates.extend(sorted(root.glob("*.utm")))
+    unique = []
+    seen = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(resolved)
+    if len(unique) == 1:
+        return unique[0]
+    if not unique:
+        raise UpdateError("no TinyArmOS .utm bundle found; pass its path after 'update'")
+    raise UpdateError("multiple .utm bundles found; pass the one to update explicitly")
+
+
+def read_installed_image(kind: str, path: Path) -> bytes:
+    if kind == "efi":
+        try:
+            return path.read_bytes()
+        except OSError as error:
+            raise UpdateError(f"could not read {path}: {error}") from error
+    try:
+        disk = Fat32Image(path.read_bytes())
+        return disk.read_file(BOOT_PATH)
+    except OSError as error:
+        raise UpdateError(f"could not read {path}: {error}") from error
+
+
+def _write_fsynced(path: Path, data: bytes) -> None:
+    with path.open("wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        # Some host filesystems do not support directory fsync.
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def install_image(kind: str, target: Path, image: bytes) -> Path:
+    backup = target.with_name(target.name + ".bak")
+    temporary: Optional[Path] = None
+    backup_temporary: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{target.name}.", suffix=".update", dir=target.parent, delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+        if kind == "disk":
+            disk = Fat32Image(target.read_bytes())
+            disk.replace_file(BOOT_PATH, image)
+            if disk.read_file(BOOT_PATH) != image:
+                raise UpdateError("updated disk failed read-back verification")
+            _write_fsynced(temporary, bytes(disk.data))
+        else:
+            _write_fsynced(temporary, image)
+        shutil.copystat(target, temporary)
+        _fsync_file(temporary)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{backup.name}.", suffix=".backup", dir=target.parent, delete=False
+        ) as handle:
+            backup_temporary = Path(handle.name)
+        shutil.copy2(target, backup_temporary)
+        _fsync_file(backup_temporary)
+        os.replace(backup_temporary, backup)
+        backup_temporary = None
+        _fsync_directory(target.parent)
+        os.replace(temporary, target)
+        temporary = None
+        _fsync_directory(target.parent)
+    except OSError as error:
+        raise UpdateError(f"could not install update: {error}") from error
+    finally:
+        for leftover in (temporary, backup_temporary):
+            if leftover is not None:
+                try:
+                    leftover.unlink()
+                except FileNotFoundError:
+                    pass
+    return backup
+
+
+def update_command(args: argparse.Namespace) -> int:
+    requested_target = Path(args.target) if args.target else discover_target()
+    kind, target = target_disk(requested_target)
+    current_image = read_installed_image(kind, target)
+    current_version = validate_efi(current_image)
+    print(f"Installed TinyArmOS: {current_version}")
+    print("Checking the latest GitHub Release...")
+    latest_version, assets = release_assets()
+    print(f"Latest TinyArmOS:    {latest_version}")
+    comparison = (version_tuple(latest_version) > version_tuple(current_version)) - (
+        version_tuple(latest_version) < version_tuple(current_version)
+    )
+    if comparison == 0:
+        print("TinyArmOS is already up to date.")
+        return 0
+    if comparison < 0:
+        raise UpdateError("latest GitHub Release is older; refusing to downgrade")
+    if args.check:
+        print("An update is available.")
+        return 0
+    tag = f"v{latest_version}"
+    efi_name = f"TinyArmOS-{tag}-BOOTAA64.EFI"
+    checksum_asset = assets["SHA256SUMS"]
+    checksum_text = https_get(
+        checksum_asset["browser_download_url"], MAX_METADATA_BYTES, "application/octet-stream"
+    )
+    expected_digest = checksum_for(checksum_text, efi_name)
+    efi_asset = assets[efi_name]
+    print(f"Downloading {efi_name}...")
+    image = https_get(
+        efi_asset["browser_download_url"], MAX_EFI_BYTES, "application/octet-stream"
+    )
+    if len(image) != efi_asset["size"]:
+        raise UpdateError("downloaded EFI size does not match GitHub release metadata")
+    actual_digest = hashlib.sha256(image).hexdigest()
+    if actual_digest != expected_digest:
+        raise UpdateError("downloaded EFI failed SHA-256 verification")
+    validate_efi(image, latest_version)
+    print(f"Verified ARM64 EFI image (SHA-256 {actual_digest}).")
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise UpdateError("confirmation required; rerun with --yes in a non-interactive shell")
+        answer = input(f"Update {requested_target} to TinyArmOS {latest_version}? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Update cancelled.")
+            return 0
+    backup = install_image(kind, target, image)
+    installed = read_installed_image(kind, target)
+    validate_efi(installed, latest_version)
+    print(f"Updated TinyArmOS to {latest_version}.")
+    print(f"Backup: {backup}")
+    print("Start the VM normally. Delete the .bak file after confirming it boots.")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="tinyarmos",
+        description="Manage TinyArmOS from the host without guest networking.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    update = subparsers.add_parser(
+        "update", help="update a TinyArmOS UTM bundle or disk from GitHub Releases"
+    )
+    update.add_argument(
+        "target",
+        nargs="?",
+        help="TinyArmOS .utm bundle, .img disk, or BOOTAA64.EFI (auto-detected when omitted)",
+    )
+    update.add_argument(
+        "--check", action="store_true", help="check whether an update exists without installing"
+    )
+    update.add_argument("--yes", action="store_true", help="install without prompting")
+    update.set_defaults(handler=update_command)
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.handler(args)
+    except UpdateError as error:
+        print(f"tinyarmos: {error}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\ntinyarmos: cancelled", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

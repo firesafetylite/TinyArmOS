@@ -30,6 +30,11 @@ jobs:
           python -m pip install --disable-pip-version-check ziglang==0.14.1
           python -m ziglang version
 
+      - name: Test host update command
+        run: |
+          python -m unittest discover -s tests -v
+          python tinyarmos --help
+
       - name: Build
         run: make
 
@@ -54,7 +59,11 @@ jobs:
               config = plistlib.load(stream)
           assert config["System"]["Architecture"] == "aarch64"
           assert config["System"]["BootUefi"] is True
-          assert config["Drives"][0]["ImagePath"] == "disk-0.img"
-          assert config["Networking"]["NetworkEnabled"] is True
-          assert config["Networking"]["NetworkCard"] == "virtio-net-pci"
+          assert config["Drives"] == [{
+              "ImagePath": "disk-0.img",
+              "ImageType": "disk",
+              "InterfaceType": "virtio",
+              "Removable": False,
+          }]
+          assert config["Networking"] == {"NetworkEnabled": False}
           PY

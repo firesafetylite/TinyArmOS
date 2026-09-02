@@ -4,11 +4,11 @@
 [![Release](https://img.shields.io/github/v/release/firesafetylite/TinyArmOS?display_name=tag)](https://github.com/firesafetylite/TinyArmOS/releases/latest)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 
-TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a persistent hierarchical MiniFS2 filesystem, verified startup, an integrated Recovery Agent, protected system nodes, firmware-backed GitHub updates, and native Freedoom. It is built from scratch and is not based on Unix or Linux.
+TinyArmOS is a lightweight, freestanding ARM64 shell OS. It includes a persistent hierarchical MiniFS2 filesystem, verified startup, an integrated Recovery Agent, protected system nodes, host-managed GitHub updates, and native Freedoom. It is built from scratch and is not based on Unix or Linux.
 
 ## Download and run in UTM
 
-For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.6.0-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, custom UEFI firmware, 256 MiB RAM, VirtIO networking and RNG, and a graphical console. UTM on Apple silicon is the primary run environment.
+For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.6.0-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, 128 MiB RAM, no guest networking, and a graphical console. UTM on Apple silicon is the primary run environment. The archive also contains the `tinyarmos` host command used for updates.
 
 The release also provides `TinyArmOS-v0.6.0-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.6.0-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
 
@@ -119,7 +119,7 @@ Run `sysfiles` to inspect both protected trees, or use `go system` and `go apps`
 /system/kernel     core, ABI, and memory records
 /system/firmware   UEFI interfaces and protocols
 /system/config     boot, shell, and protection policy
-/system/drivers    GOP, input, network, storage, and timer records
+/system/drivers    GOP, input, storage, and timer records
 /system/runtime    MiniFS2, mounts, and snapshots
 /system/security   integrity policy and protected paths
 /apps/doom         Freedoom app, controls, data link, and license
@@ -193,7 +193,6 @@ info
 uptime
 count
 protect [status|unlock|lock]
-update [check]
 recovery
 reboot
 shutdown
@@ -201,16 +200,15 @@ shutdown
 
 ## Updates
 
-The v0.6.0 UTM bundle includes pinned EDK2 firmware with VirtIO networking, RNG-backed TLS, and a narrow built-in certificate trust store. Run:
+TinyArmOS deliberately has no guest network stack or in-guest updater. Shut down the VM, open a host terminal in the extracted release folder, and run:
 
-```text
-update check   check the latest GitHub Release
-update         download, verify, and install it
+```bash
+./tinyarmos update TinyArmOS-v0.6.0.utm
 ```
 
-The updater uses the firmware's UEFI HTTP/TLS service with IPv4 DHCP and a UTM Shared Network fallback. It reads the redirect-free GitHub Pages update channel, validates a strict manifest and SHA-256 checksum, confirms the download is an ARM64 EFI application, rejects rollback versions, and keeps `EFI/BOOT/BOOTAA64.BAK` as a fallback. Reboot after installation.
+Use `./tinyarmos update --check TinyArmOS-v0.6.0.utm` to check without changing the bundle. The bundle path can be omitted when exactly one `.utm` bundle is next to the command.
 
-HTTP, TLS, DNS, certificate trust, and address configuration are supplied by the VM firmware. If different firmware omits those services or lacks usable CA certificates, `update` fails closed and prints the UEFI status instead of installing an unverified image. v0.6.0 must be installed normally once when upgrading from an older stock-firmware bundle; later releases can update themselves.
+The host command asks GitHub for the latest Release, compares the version embedded in the installed OS, downloads only a newer ARM64 EFI image, verifies its release SHA-256 checksum and PE/EFI headers, and creates `disk-0.img.bak` before installation. It replaces only `EFI/BOOT/BOOTAA64.EFI`; MiniFS snapshots, user files, and Freedoom remain unchanged. Keep the VM stopped while updating and delete the backup only after the new version boots successfully.
 
 ## Build from source
 
@@ -222,7 +220,7 @@ python3 -m venv /tmp/tinyarmos-venv
 PATH="/tmp/tinyarmos-venv/bin:$PATH" make
 ```
 
-Alternatively, install Zig 0.14.1 directly and run `make`. `build.sh` compiles the ARM64 EFI executable, embeds Freedoom in a 64 MiB GPT/FAT32 disk, and generates `build/BOOTAA64.EFI`, `build/TinyArmOS-UTM.img`, and `build/TinyArmOS.utm`. The image and bundle builders use only Python's standard library.
+Alternatively, install Zig 0.14.1 directly and run `make`. `build.sh` compiles the ARM64 EFI executable, embeds Freedoom in a 64 MiB GPT/FAT32 disk, and generates `build/BOOTAA64.EFI`, `build/TinyArmOS-UTM.img`, and `build/TinyArmOS.utm`. The image builder, bundle builder, and host update command use only Python's standard library.
 
 CI checks that the EFI output is an AArch64 PE32+ application, validates the GPT/FAT32 signatures and UTM configuration, and confirms that the standalone and bundled disk images match. These structural checks do not replace a firmware boot test; when changing boot or runtime behavior, also test the generated bundle in UTM when practical.
 
@@ -232,4 +230,4 @@ Use `make clean` to remove generated output. Everything under `build/` is intent
 
 Copyright © 2026 firesafetylite. TinyArmOS as an integrated work is licensed under the [GNU General Public License version 2 only](LICENSE) (`GPL-2.0-only`) because it incorporates PureDOOM.
 
-PureDOOM is distributed under GPL-2.0, Freedoom 0.13.0 assets are distributed under the BSD 3-Clause license, EDK2 firmware is BSD-2-Clause-Patent, linked libfdt code is BSD-2-Clause, and linked OpenSSL code is Apache-2.0. Original license and attribution files are preserved under `third_party/PureDOOM/`, `assets/`, and `firmware/licenses/`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
+PureDOOM is distributed under GPL-2.0, and Freedoom 0.13.0 assets are distributed under the BSD 3-Clause license. Original license and attribution files are preserved under `third_party/PureDOOM/` and `assets/`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
