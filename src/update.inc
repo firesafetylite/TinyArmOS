@@ -841,7 +841,7 @@ static int update_parse_manifest(char *text, UINTN bytes, UPDATE_MANIFEST *manif
             haveDigest = 1;
         } else if (streq(line, "url")) {
             if (haveUrl || !update_https_url(equals) ||
-                !starts_with(equals, "https://github.com/firesafetylite/TinyArmOS/releases/download/") ||
+                !streq(equals, "https://firesafetylite.github.io/TinyArmOS/TinyArmOS-latest-BOOTAA64.EFI") ||
                 !update_copy(manifest->url, equals, sizeof(manifest->url))) return 0;
             haveUrl = 1;
         } else return 0;
