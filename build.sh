@@ -22,7 +22,12 @@ fi
   -o build/BOOTAA64.EFI src/uefi.c
 
 python3 tools/make_utm_image.py build/BOOTAA64.EFI build/TinyArmOS-UTM.img assets/freedoom1.wad
-python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm
+firmware="${TINYARMOS_UEFI_FIRMWARE:-build/TinyArmOS-QEMU_EFI.fd}"
+if [[ -f "$firmware" ]]; then
+  python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm "$firmware"
+else
+  python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm
+fi
 
 echo
 echo "Build complete:"

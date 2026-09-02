@@ -10,16 +10,39 @@ from pathlib import Path
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        print(f"usage: {sys.argv[0]} DISK.img OUTPUT.utm", file=sys.stderr)
+    if len(sys.argv) not in (3, 4):
+        print(f"usage: {sys.argv[0]} DISK.img OUTPUT.utm [UEFI_FIRMWARE.fd]", file=sys.stderr)
         raise SystemExit(2)
     disk = Path(sys.argv[1]).resolve()
     bundle = Path(sys.argv[2]).resolve()
+    firmware = Path(sys.argv[3]).resolve() if len(sys.argv) == 4 else None
+    if firmware is not None and not firmware.is_file():
+        raise FileNotFoundError(firmware)
     if bundle.exists():
         shutil.rmtree(bundle)
     images = bundle / "Images"
     images.mkdir(parents=True)
     shutil.copyfile(disk, images / "disk-0.img")
+    if firmware is not None:
+        shutil.copyfile(firmware, images / "tinyarmos-uefi.fd")
+
+    drives = [
+        {
+            "ImagePath": "disk-0.img",
+            "ImageType": "disk",
+            "InterfaceType": "virtio",
+            "Removable": False,
+        }
+    ]
+    if firmware is not None:
+        drives.append(
+            {
+                "ImagePath": "tinyarmos-uefi.fd",
+                "ImageType": "bios",
+                "InterfaceType": "none",
+                "Removable": False,
+            }
+        )
 
     # UTM's current releases migrate this stable version-2 QEMU schema on import.
     config = {
@@ -36,14 +59,7 @@ def main() -> None:
             "ConsoleFontSize": 14,
             "ConsoleTheme": "Default",
         },
-        "Drives": [
-            {
-                "ImagePath": "disk-0.img",
-                "ImageType": "disk",
-                "InterfaceType": "virtio",
-                "Removable": False,
-            }
-        ],
+        "Drives": drives,
         "Info": {
             "Icon": "terminal",
             "IconCustom": False,
@@ -64,7 +80,7 @@ def main() -> None:
             "CPU": "default",
             "CPUFlags": [],
             "CPUCount": 1,
-            "Memory": 128,
+            "Memory": 256,
             "JITCacheSize": 0,
             "ForceMulticore": False,
             "BootDevice": "",
