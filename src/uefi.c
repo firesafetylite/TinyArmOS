@@ -437,20 +437,24 @@ static void scrollback_render(void) {
         console_write_raw(gScrollback[index]);
         if (index + 1 < end || gScrollbackOffset) console_write_raw("\n");
     }
-    if (gScrollbackOffset) console_write_raw("-- SCROLLBACK: PageUp/PageDown, End or Esc returns to live shell --");
+    if (gScrollbackOffset) console_write_raw("-- SCROLLBACK: Up/Down line, PageUp/PageDown page, End/Esc live --");
 }
 
-static void scrollback_page(int direction) {
+static void scrollback_move(int direction, UINTN lines) {
     UINTN page = gConsoleRows > 4 ? gConsoleRows - 2 : 10;
     UINTN maxOffset = gScrollbackCount > page ? gScrollbackCount - page : 0;
     if (direction < 0) {
-        if (gScrollbackOffset + page > maxOffset) gScrollbackOffset = maxOffset;
-        else gScrollbackOffset += page;
+        if (gScrollbackOffset + lines > maxOffset) gScrollbackOffset = maxOffset;
+        else gScrollbackOffset += lines;
     } else {
-        if (gScrollbackOffset > page) gScrollbackOffset -= page;
+        if (gScrollbackOffset > lines) gScrollbackOffset -= lines;
         else gScrollbackOffset = 0;
     }
     scrollback_render();
+}
+
+static void scrollback_page(int direction) {
+    scrollback_move(direction, gConsoleRows > 4 ? gConsoleRows - 2 : 10);
 }
 
 static void scrollback_enable(void) {
@@ -1212,6 +1216,14 @@ static void read_line(char *line, UINTN capacity) {
             continue;
         }
         if (status != EFI_SUCCESS) continue;
+        if (gScrollbackEnabled && key.ScanCode == 1) {
+            scrollback_move(-1, 1);
+            continue;
+        }
+        if (gScrollbackEnabled && key.ScanCode == 2) {
+            scrollback_move(1, 1);
+            continue;
+        }
         if (gScrollbackEnabled && key.ScanCode == 9) {
             scrollback_page(-1);
             continue;
@@ -1442,7 +1454,7 @@ static void command_help(void) {
     print(
         "Shell:\n"
         "  help, clear, echo TEXT, info, uptime, count\n"
-        "  PageUp/PageDown scroll; End/Esc returns live; scroll clear resets\n"
+        "  Up/Down scroll lines; PageUp/PageDown pages; End/Esc returns live\n"
         "Easy navigation:\n"
         "  home / root / up / back       jump between common places\n"
         "  go PLACE|PATH                  go home, system, apps, recovery, tmp\n"
@@ -1505,7 +1517,7 @@ static void run_command(char *line) {
     } else if (streq(command, "scroll")) {
         print("Scrollback stores ");
         print_u64(gScrollbackCount);
-        print("/256 lines. Use PageUp/PageDown; End or Esc returns to live output.\n");
+        print("/256 lines. Use Up/Down for lines, PageUp/PageDown for pages; End or Esc returns live.\n");
     } else if (streq(command, "scroll clear")) {
         scrollback_reset();
         print("scrollback cleared\n");

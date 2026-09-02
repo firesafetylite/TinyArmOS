@@ -2,6 +2,12 @@
 
 Notable changes to TinyArmOS are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic versioning for releases.
 
+## [Unreleased]
+
+### Added
+
+- Up/Down arrow keys scroll shell output one line at a time alongside PageUp/PageDown paging.
+
 ## [0.4.0] - 2026-09-02
 
 ### Added

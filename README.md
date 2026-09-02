@@ -60,7 +60,7 @@ MiniFS2 provides:
 - Persistent storage across reboots
 - Absolute, relative, `~`, `cd`, and `cd -` navigation
 - Friendly `go`, `open`, `home`, `root`, `up`, `back`, `dir`, and `list` shortcuts
-- 256-line shell scrollback with PageUp/PageDown navigation
+- 256-line shell scrollback with arrow-key and PageUp/PageDown navigation
 - Nested directories and directory-aware `cp`/`mv`
 - 96 fixed nodes with up to 8191 data bytes per file
 - Protected `/system`, `/apps`, `/recovery`, and `/lost+found` trees
@@ -171,10 +171,11 @@ The engine is [PureDOOM](https://github.com/Daivuk/PureDOOM). The legally redist
 The shell keeps the latest 256 lines of commands and output:
 
 ```text
-PageUp       scroll toward older output
-PageDown     scroll toward newer output
-Home         jump to the oldest available page
-End or Esc   return to the live prompt
+Up/Down     scroll one line at a time
+PageUp      scroll one page toward older output
+PageDown    scroll one page toward newer output
+Home        jump to the oldest available page
+End or Esc  return to the live prompt
 scroll       show scrollback status and controls
 scroll clear erase retained scrollback
 ```
