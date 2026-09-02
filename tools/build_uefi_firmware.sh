@@ -98,6 +98,7 @@ PY
 
 touch -d "@$(git show -s --format=%ct HEAD)" OvmfPkg/Library/TlsAuthConfigLib/TinyArmCaCerts.inc
 make -C BaseTools -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+export PYTHON_COMMAND=python3
 # shellcheck disable=SC1091
 source edksetup.sh BaseTools
 export GCC5_AARCH64_PREFIX="${GCC5_AARCH64_PREFIX:-aarch64-linux-gnu-}"
