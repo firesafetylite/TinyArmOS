@@ -9,10 +9,24 @@ typedef UINT16             CHAR16;
 typedef void              *EFI_HANDLE;
 typedef UINT64             EFI_STATUS;
 
-#define EFI_SUCCESS   0
-#define EFI_NOT_READY (0x8000000000000000ULL | 6ULL)
+#define EFI_SUCCESS            0
+#define EFI_ERROR_MASK         0x8000000000000000ULL
+#define EFI_UNSUPPORTED        (EFI_ERROR_MASK | 3ULL)
+#define EFI_BUFFER_TOO_SMALL   (EFI_ERROR_MASK | 5ULL)
+#define EFI_NOT_READY          (EFI_ERROR_MASK | 6ULL)
+#define EFI_DEVICE_ERROR       (EFI_ERROR_MASK | 7ULL)
+#define EFI_OUT_OF_RESOURCES   (EFI_ERROR_MASK | 9ULL)
+#define EFI_NOT_FOUND          (EFI_ERROR_MASK | 14ULL)
+#define EFI_ACCESS_DENIED      (EFI_ERROR_MASK | 15ULL)
+#define EFI_NO_MAPPING         (EFI_ERROR_MASK | 17ULL)
+#define EFI_TIMEOUT            (EFI_ERROR_MASK | 18ULL)
+#define EFI_ABORTED            (EFI_ERROR_MASK | 21ULL)
+#define EFI_SECURITY_VIOLATION (EFI_ERROR_MASK | 26ULL)
+#define EFI_HTTP_ERROR         (EFI_ERROR_MASK | 35ULL)
 #define EFIAPI
 
+#define EVT_NOTIFY_SIGNAL 0x00000200U
+#define TPL_CALLBACK      8U
 #define TINYARMOS_VERSION "0.6.0"
 
 struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
@@ -105,21 +119,37 @@ typedef struct EFI_RUNTIME_SERVICES {
     EFI_RESET_SYSTEM ResetSystem;
 } EFI_RUNTIME_SERVICES;
 
+typedef void *EFI_EVENT;
+typedef void (EFIAPI *EFI_EVENT_NOTIFY)(EFI_EVENT, void *);
 typedef EFI_STATUS (EFIAPI *EFI_ALLOCATE_POOL)(UINT32, UINTN, void **);
 typedef EFI_STATUS (EFIAPI *EFI_FREE_POOL)(void *);
+typedef EFI_STATUS (EFIAPI *EFI_CREATE_EVENT)(UINT32, UINTN, EFI_EVENT_NOTIFY, void *, EFI_EVENT *);
+typedef EFI_STATUS (EFIAPI *EFI_CLOSE_EVENT)(EFI_EVENT);
 typedef EFI_STATUS (EFIAPI *EFI_HANDLE_PROTOCOL)(EFI_HANDLE, EFI_GUID *, void **);
+typedef EFI_STATUS (EFIAPI *EFI_STALL)(UINTN);
 typedef EFI_STATUS (EFIAPI *EFI_SET_WATCHDOG_TIMER)(UINTN, UINT64, UINTN, CHAR16 *);
+typedef EFI_STATUS (EFIAPI *EFI_CONNECT_CONTROLLER)(EFI_HANDLE, EFI_HANDLE *, void *, UINT8);
+typedef EFI_STATUS (EFIAPI *EFI_LOCATE_HANDLE_BUFFER)(UINT32, EFI_GUID *, void *, UINTN *, EFI_HANDLE **);
 typedef EFI_STATUS (EFIAPI *EFI_LOCATE_PROTOCOL)(EFI_GUID *, void *, void **);
 typedef struct {
     EFI_TABLE_HEADER Hdr;
     void *BeforeAllocatePool[5];
     EFI_ALLOCATE_POOL AllocatePool;
     EFI_FREE_POOL FreePool;
-    void *BeforeHandleProtocol[9];
+    EFI_CREATE_EVENT CreateEvent;
+    void *SetTimer;
+    void *WaitForEvent;
+    void *SignalEvent;
+    EFI_CLOSE_EVENT CloseEvent;
+    void *CheckEvent;
+    void *BeforeHandleProtocol[3];
     EFI_HANDLE_PROTOCOL HandleProtocol;
-    void *BeforeSetWatchdogTimer[12];
+    void *BeforeStall[11];
+    EFI_STALL Stall;
     EFI_SET_WATCHDOG_TIMER SetWatchdogTimer;
-    void *BeforeLocateProtocol[7];
+    EFI_CONNECT_CONTROLLER ConnectController;
+    void *BeforeLocateHandleBuffer[5];
+    EFI_LOCATE_HANDLE_BUFFER LocateHandleBuffer;
     EFI_LOCATE_PROTOCOL LocateProtocol;
 } EFI_BOOT_SERVICES_PREFIX;
 
@@ -846,7 +876,7 @@ static void fs_restore_system(void) {
         fs_ensure_file((UINTN)firmware, "uefi.info",
             "critical=yes\ninterface=UEFI ARM64\nloader=BOOTAA64.EFI\nwatchdog=disabled while OS runs", FS_PROTECTED);
         fs_ensure_file((UINTN)firmware, "protocols.info",
-            "SimpleTextInput\nSimpleTextOutput\nSimpleFileSystem\nLoadedImage\nGraphicsOutput\nRuntimeServices", FS_PROTECTED);
+            "SimpleTextInput\nSimpleTextOutput\nSimpleFileSystem\nLoadedImage\nGraphicsOutput\nHttpServiceBinding (optional)\nHttp/TLS (optional)\nRuntimeServices", FS_PROTECTED);
     }
     if (config >= 0) {
         fs_ensure_file((UINTN)config, "boot.cfg",
@@ -859,6 +889,7 @@ static void fs_restore_system(void) {
     if (drivers >= 0) {
         fs_ensure_file((UINTN)drivers, "graphics.info", "UEFI Graphics Output Protocol\nconsumer=Freedoom\nmode=firmware-native", FS_PROTECTED);
         fs_ensure_file((UINTN)drivers, "input.info", "UEFI Simple Text Input\nkeyboard=polling\nrelease=simulated", FS_PROTECTED);
+        fs_ensure_file((UINTN)drivers, "network.info", "UEFI HTTP/TLS\ntransport=firmware\naddress=IPv4 DHCP\nupdates=GitHub Releases\nrequired=firmware HTTP and CA trust", FS_PROTECTED);
         fs_ensure_file((UINTN)drivers, "storage.info", "UEFI Simple File System\nvolume=EFI FAT32\nsnapshots=TINYFS0.BIN,TINYFS1.BIN", FS_PROTECTED);
         fs_ensure_file((UINTN)drivers, "timer.info", "ARM generic virtual counter\nclock=monotonic", FS_PROTECTED);
     }
@@ -869,7 +900,7 @@ static void fs_restore_system(void) {
     }
     if (security >= 0) {
         fs_ensure_file((UINTN)security, "integrity.policy",
-            "critical nodes use FNV-1a checksums\nverify at boot\nauto-repair metadata\nrollback to newest valid snapshot", FS_PROTECTED);
+            "critical nodes use FNV-1a checksums\nupdates require HTTPS, SHA-256, and ARM64 PE validation\nverify at boot\nauto-repair metadata\nrollback to newest valid snapshot", FS_PROTECTED);
         fs_ensure_file((UINTN)security, "protected.paths",
             "/system\n/apps\n/recovery\n/lost+found\nUnlock requires exact UNLOCK confirmation and expires at reboot.", FS_PROTECTED);
     }
@@ -1269,6 +1300,7 @@ static void read_line(char *line, UINTN capacity) {
     }
 }
 
+#include "update.inc"
 #include "doom_port.inc"
 
 static void boot_stage(UINTN step, const char *label, int okay) {
@@ -1483,6 +1515,7 @@ static void command_help(void) {
         "Games:\n"
         "  doom                 launch Freedoom (Q returns to shell)\n"
         "System:\n"
+        "  update [check]       securely update from GitHub Releases\n"
         "  protect [status|unlock|lock], recovery, reboot, shutdown\n"
     );
 }
@@ -1778,6 +1811,8 @@ static void run_command(char *line) {
     } else if (streq(command, "protect lock")) {
         gProtectionUnlocked = 0;
         print("protected nodes locked\n");
+    } else if (streq(command, "update") || streq(command, "update check")) {
+        command_update(streq(command, "update check"));
     } else if (streq(command, "recovery")) {
         recovery_agent();
         gST->ConOut->ClearScreen(gST->ConOut);

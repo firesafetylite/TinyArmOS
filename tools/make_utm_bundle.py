@@ -10,16 +10,52 @@ from pathlib import Path
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        print(f"usage: {sys.argv[0]} DISK.img OUTPUT.utm", file=sys.stderr)
+    if len(sys.argv) not in (3, 5):
+        print(
+            f"usage: {sys.argv[0]} DISK.img OUTPUT.utm [UEFI_CODE.fd UEFI_VARS.fd]",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
     disk = Path(sys.argv[1]).resolve()
     bundle = Path(sys.argv[2]).resolve()
+    firmware = Path(sys.argv[3]).resolve() if len(sys.argv) == 5 else None
+    variables = Path(sys.argv[4]).resolve() if len(sys.argv) == 5 else None
+    for image in (firmware, variables):
+        if image is not None and not image.is_file():
+            raise FileNotFoundError(image)
     if bundle.exists():
         shutil.rmtree(bundle)
     images = bundle / "Images"
     images.mkdir(parents=True)
     shutil.copyfile(disk, images / "disk-0.img")
+    if firmware is not None and variables is not None:
+        shutil.copyfile(firmware, images / "tinyarmos-uefi-code.fd")
+        shutil.copyfile(variables, images / "tinyarmos-uefi-vars.fd")
+
+    disk_drive = {
+        "ImagePath": "disk-0.img",
+        "ImageType": "disk",
+        "InterfaceType": "virtio",
+        "Removable": False,
+    }
+    if firmware is not None:
+        drives = [
+            {
+                "ImagePath": "tinyarmos-uefi-code.fd",
+                "ImageType": "disk",
+                "InterfaceType": "pflash",
+                "Removable": False,
+            },
+            {
+                "ImagePath": "tinyarmos-uefi-vars.fd",
+                "ImageType": "disk",
+                "InterfaceType": "pflash",
+                "Removable": False,
+            },
+            disk_drive,
+        ]
+    else:
+        drives = [disk_drive]
 
     # UTM's current releases migrate this stable version-2 QEMU schema on import.
     config = {
@@ -36,21 +72,18 @@ def main() -> None:
             "ConsoleFontSize": 14,
             "ConsoleTheme": "Default",
         },
-        "Drives": [
-            {
-                "ImagePath": "disk-0.img",
-                "ImageType": "disk",
-                "InterfaceType": "virtio",
-                "Removable": False,
-            }
-        ],
+        "Drives": drives,
         "Info": {
             "Icon": "terminal",
             "IconCustom": False,
-            "Notes": "Tiny ARM64 shell with MiniFS2, recovery snapshots, and native Freedoom.",
+            "Notes": "Tiny ARM64 UEFI shell with MiniFS2, native Freedoom, and GitHub updates.",
         },
         "Input": {"InputLegacy": False},
-        "Networking": {"NetworkEnabled": False},
+        "Networking": {
+            "NetworkEnabled": True,
+            "NetworkMode": "emulated",
+            "NetworkCard": "virtio-net-pci",
+        },
         "Printing": {},
         "Sharing": {"ClipboardSharing": False, "DirectorySharing": False},
         "Sound": {"SoundEnabled": False},
@@ -60,7 +93,7 @@ def main() -> None:
             "CPU": "default",
             "CPUFlags": [],
             "CPUCount": 1,
-            "Memory": 128,
+            "Memory": 256,
             "JITCacheSize": 0,
             "ForceMulticore": False,
             "BootDevice": "",

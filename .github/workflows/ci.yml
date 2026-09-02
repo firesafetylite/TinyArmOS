@@ -48,6 +48,8 @@ jobs:
           test -f build/TinyArmOS.utm/Images/disk-0.img
           cmp build/TinyArmOS-UTM.img build/TinyArmOS.utm/Images/disk-0.img
           file build/BOOTAA64.EFI | grep -Eq 'PE32\+ executable.*Aarch64'
+          strings build/BOOTAA64.EFI | grep -Fq 'update [check]'
+          strings build/BOOTAA64.EFI | grep -Fq 'Checking GitHub Releases over firmware HTTPS'
           python - <<'PY'
           import plistlib
           from pathlib import Path
@@ -65,5 +67,6 @@ jobs:
               "InterfaceType": "virtio",
               "Removable": False,
           }]
-          assert config["Networking"] == {"NetworkEnabled": False}
+          assert config["Networking"]["NetworkEnabled"] is True
+          assert config["Networking"]["NetworkCard"] == "virtio-net-pci"
           PY

@@ -9,9 +9,9 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 - A standard-library `tinyarmos update` host command that checks GitHub Releases, verifies the ARM64 EFI asset, preserves MiniFS data, and creates a disk backup.
 - Unit coverage for version checks, EFI validation, checksum parsing, FAT32 replacement, data preservation, and UTM target resolution.
 
-### Removed
+### Changed
 
-- The in-guest firmware HTTP/TLS updater, custom network firmware, guest network device, certificate bundle, and GitHub Pages update channel.
+- Kept the in-OS UEFI HTTP/TLS `update` command and added the host command as a fallback instead of replacing guest updates.
 
 ## [0.6.0] - 2026-09-02
 

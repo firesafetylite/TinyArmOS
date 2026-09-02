@@ -22,7 +22,20 @@ fi
   -o build/BOOTAA64.EFI src/uefi.c
 
 python3 tools/make_utm_image.py build/BOOTAA64.EFI build/TinyArmOS-UTM.img assets/freedoom1.wad
-python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm
+firmware="${TINYARMOS_UEFI_FIRMWARE:-build/TinyArmOS-QEMU_EFI.fd}"
+variables="${TINYARMOS_UEFI_VARIABLES:-${firmware%.fd}-vars.fd}"
+if [[ -f "$firmware" && -f "$variables" ]]; then
+  python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm "$firmware" "$variables"
+elif [[ -f "$firmware" || -f "$variables" ]]; then
+  echo "Both UEFI code and variable images are required; refusing a partial firmware bundle." >&2
+  exit 1
+elif [[ "${TINYARMOS_REQUIRE_UEFI_FIRMWARE:-0}" == 1 ]]; then
+  echo "The HTTP/TLS-capable UEFI firmware is required for this build." >&2
+  exit 1
+else
+  echo "Warning: custom UEFI firmware is absent; this development bundle cannot use network updates." >&2
+  python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm
+fi
 
 echo
 echo "Build complete:"
