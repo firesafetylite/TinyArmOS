@@ -99,8 +99,10 @@ PY
 touch -d "@$(git show -s --format=%ct HEAD)" OvmfPkg/Library/TlsAuthConfigLib/TinyArmCaCerts.inc
 make -C BaseTools -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 export PYTHON_COMMAND=python3
+set +u
 # shellcheck disable=SC1091
 source edksetup.sh BaseTools
+set -u
 export GCC5_AARCH64_PREFIX="${GCC5_AARCH64_PREFIX:-aarch64-linux-gnu-}"
 export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
 build -a AARCH64 -t GCC5 -b RELEASE -p ArmVirtPkg/ArmVirtQemu.dsc \
