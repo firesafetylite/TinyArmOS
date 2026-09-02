@@ -4,7 +4,7 @@
 #define UPDATE_MANIFEST_URL "https://github.com/firesafetylite/TinyArmOS/releases/latest/download/TinyArmOS-update.txt"
 #define UPDATE_MAX_MANIFEST_BYTES 4096U
 #define UPDATE_MAX_IMAGE_BYTES (8U * 1024U * 1024U)
-#define UPDATE_MAX_URL_BYTES 768U
+#define UPDATE_MAX_URL_BYTES 4096U
 #define UPDATE_MAX_REDIRECTS 8U
 #define UPDATE_HTTP_TIMEOUT_SECONDS 30U
 
@@ -634,11 +634,14 @@ static EFI_STATUS update_http_fetch_once(const char *url, UINT8 *buffer, UINTN c
         status = session.http->Response(session.http, &responseToken);
         if (status != EFI_SUCCESS) goto cleanup;
         status = update_http_wait(&session, &responseToken, &responseDone);
-        if (status != EFI_SUCCESS) goto cleanup;
+        if (status != EFI_SUCCESS && status != EFI_HTTP_ERROR) goto cleanup;
         chunk = responseMessage.BodyLength;
         update_free_headers(&responseMessage);
-        if (!chunk) break;
-        used += chunk;
+        if (chunk) used += chunk;
+        if (status == EFI_HTTP_ERROR || !chunk) {
+            status = EFI_SUCCESS;
+            break;
+        }
     }
     if ((hasExpected && used != expected) || (!hasExpected && used == capacity)) {
         status = EFI_DEVICE_ERROR;

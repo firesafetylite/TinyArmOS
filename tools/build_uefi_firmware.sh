@@ -3,6 +3,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 output="${1:-$repo_root/build/TinyArmOS-QEMU_EFI.fd}"
+case "$output" in
+  /*) ;;
+  *) output="$(pwd)/$output" ;;
+esac
 work="${TINYARMOS_EDK2_WORK:-${TMPDIR:-/tmp}/tinyarmos-edk2-build}"
 edk2_ref="edk2-stable202508"
 edk2_commit="d46aa46c8361194521391aa581593e556c707c6e"
