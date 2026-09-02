@@ -39,7 +39,10 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text()
 old = "[LibraryClasses.common.UEFI_DRIVER]\n  UefiScsiLib|MdePkg/Library/UefiScsiLib/UefiScsiLib.inf\n"
-new = old + "  RngLib|MdePkg/Library/DxeRngLib/DxeRngLib.inf\n"
+new = old + (
+    "  RngLib|MdePkg/Library/DxeRngLib/DxeRngLib.inf\n"
+    "  OpensslLib|CryptoPkg/Library/OpensslLib/OpensslLibFull.inf\n"
+)
 if old not in text:
     raise SystemExit("EDK2 UEFI driver library section did not match the pinned source")
 path.write_text(text.replace(old, new, 1))
