@@ -137,7 +137,7 @@ ffs=Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/Ffs
 test -s "$firmware"
 test -s "$variables"
 for module in VirtioNetDxe VirtioRngDxe Dhcp4Dxe DnsDxe HttpDxe TlsDxe TlsAuthConfigDxe; do
-  find "$ffs" -maxdepth 1 -type d -name "*_${module}" -print -quit | grep -q . || {
+  find "$ffs" -maxdepth 1 -type d -name "*${module}" -print -quit | grep -q . || {
     echo "Required firmware module is missing: $module" >&2
     exit 1
   }
