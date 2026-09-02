@@ -47,10 +47,14 @@ def main() -> None:
         "Info": {
             "Icon": "terminal",
             "IconCustom": False,
-            "Notes": "Tiny ARM64 UEFI shell with MiniFS2 recovery snapshots and native Freedoom.",
+            "Notes": "Tiny ARM64 UEFI shell with MiniFS2, native Freedoom, and GitHub updates.",
         },
         "Input": {"InputLegacy": False},
-        "Networking": {"NetworkEnabled": False},
+        "Networking": {
+            "NetworkEnabled": True,
+            "NetworkMode": "emulated",
+            "NetworkCard": "virtio-net-pci",
+        },
         "Printing": {},
         "Sharing": {"ClipboardSharing": False, "DirectorySharing": False},
         "Sound": {"SoundEnabled": False},

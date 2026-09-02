@@ -55,4 +55,6 @@ jobs:
           assert config["System"]["Architecture"] == "aarch64"
           assert config["System"]["BootUefi"] is True
           assert config["Drives"][0]["ImagePath"] == "disk-0.img"
+          assert config["Networking"]["NetworkEnabled"] is True
+          assert config["Networking"]["NetworkCard"] == "virtio-net-pci"
           PY

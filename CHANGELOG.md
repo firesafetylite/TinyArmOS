@@ -2,6 +2,14 @@
 
 Notable changes to TinyArmOS are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic versioning for releases.
 
+## [0.5.0] - 2026-09-02
+
+### Added
+
+- Firmware-backed UEFI HTTP/TLS updater with `update` and `update check` commands.
+- GitHub Release manifests, bounded HTTPS redirects, SHA-256 verification, ARM64 PE validation, and bootloader backup/restore.
+- Enabled VirtIO networking in generated UTM bundles.
+
 ## [0.4.1] - 2026-09-02
 
 ### Added
@@ -18,5 +26,6 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 - Shell navigation, file-management commands, and 256-line scrollback.
 - Source builders for a bootable GPT/FAT32 image and UTM bundle.
 
+[0.5.0]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.5.0
 [0.4.1]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.4.1
 [0.4.0]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.4.0

@@ -1,16 +1,16 @@
-# TinyArmOS v0.4.1
+# TinyArmOS v0.5.0
 
 [![CI](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml/badge.svg)](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/firesafetylite/TinyArmOS?display_name=tag)](https://github.com/firesafetylite/TinyArmOS/releases/latest)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 
-TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a persistent hierarchical MiniFS2 filesystem, verified startup, an integrated Recovery Agent, protected system nodes, and native Freedoom. It is built from scratch and is not based on Unix or Linux.
+TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a persistent hierarchical MiniFS2 filesystem, verified startup, an integrated Recovery Agent, protected system nodes, firmware-backed GitHub updates, and native Freedoom. It is built from scratch and is not based on Unix or Linux.
 
 ## Download and run in UTM
 
-For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.4.1-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, UEFI, 128 MiB RAM, and a graphical console. UTM on Apple silicon is the primary run environment.
+For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.5.0-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, UEFI, 128 MiB RAM, and a graphical console. UTM on Apple silicon is the primary run environment.
 
-The release also provides `TinyArmOS-v0.4.1-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.4.1-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
+The release also provides `TinyArmOS-v0.5.0-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.5.0-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
 
 The disk image's FAT32 EFI System Partition contains:
 
@@ -119,7 +119,7 @@ Run `sysfiles` to inspect both protected trees, or use `go system` and `go apps`
 /system/kernel     core, ABI, and memory records
 /system/firmware   UEFI interfaces and protocols
 /system/config     boot, shell, and protection policy
-/system/drivers    GOP, input, storage, and timer records
+/system/drivers    GOP, input, network, storage, and timer records
 /system/runtime    MiniFS2, mounts, and snapshots
 /system/security   integrity policy and protected paths
 /apps/doom         Freedoom app, controls, data link, and license
@@ -193,10 +193,24 @@ info
 uptime
 count
 protect [status|unlock|lock]
+update [check]
 recovery
 reboot
 shutdown
 ```
+
+## Updates
+
+The v0.5.0 UTM bundle enables a VirtIO network adapter. Run:
+
+```text
+update check   check the latest GitHub Release
+update         download, verify, and install it
+```
+
+The updater uses the firmware's UEFI HTTP/TLS service with IPv4 DHCP, follows HTTPS redirects, validates a strict release manifest and SHA-256 checksum, confirms the download is an ARM64 EFI application, and keeps `EFI/BOOT/BOOTAA64.BAK` as a fallback. Reboot after installation.
+
+HTTP, TLS, DNS, certificate trust, and DHCP are supplied by the VM firmware. If a different firmware omits those services or lacks usable CA certificates, `update` fails closed and prints the UEFI status instead of installing an unverified image. v0.5.0 must be installed normally once; later releases can update themselves.
 
 ## Build from source
 

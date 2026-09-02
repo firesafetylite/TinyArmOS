@@ -58,6 +58,8 @@ jobs:
           assert config["System"]["Architecture"] == "aarch64"
           assert config["System"]["BootUefi"] is True
           assert config["Drives"][0]["ImagePath"] == "disk-0.img"
+          assert config["Networking"]["NetworkEnabled"] is True
+          assert config["Networking"]["NetworkCard"] == "virtio-net-pci"
           PY
 
       - name: Package release assets
@@ -66,7 +68,9 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           mkdir -p dist
-          cp build/BOOTAA64.EFI "dist/TinyArmOS-${tag}-BOOTAA64.EFI"
+          version="${tag#v}"
+          efi_name="TinyArmOS-${tag}-BOOTAA64.EFI"
+          cp build/BOOTAA64.EFI "dist/${efi_name}"
           cp build/TinyArmOS-UTM.img "dist/TinyArmOS-${tag}-UTM.img"
           cp -R build/TinyArmOS.utm "dist/TinyArmOS-${tag}.utm"
           (
@@ -81,8 +85,19 @@ jobs:
             assets/FREEDOOM-CREDITS.txt \
             assets/FREEDOOM-CREDITS-MUSIC.txt \
             assets/FREEDOOM-README.html
+          efi_size="$(stat -c '%s' "dist/${efi_name}")"
+          efi_sha256="$(sha256sum "dist/${efi_name}" | cut -d ' ' -f 1)"
+          cat > dist/TinyArmOS-update.txt <<EOF
+          version=${version}
+          size=${efi_size}
+          sha256=${efi_sha256}
+          url=https://github.com/firesafetylite/TinyArmOS/releases/download/${tag}/${efi_name}
+          EOF
           (
             cd dist
+            test "$(grep -c '^' TinyArmOS-update.txt)" -eq 4
+            test "$(awk -F= '/^size=/{print $2}' TinyArmOS-update.txt)" -eq "$(stat -c '%s' "${efi_name}")"
+            test "$(awk -F= '/^sha256=/{print $2}' TinyArmOS-update.txt)" = "$(sha256sum "${efi_name}" | cut -d ' ' -f 1)"
             sha256sum TinyArmOS-* > SHA256SUMS
             sha256sum --check SHA256SUMS
           )
