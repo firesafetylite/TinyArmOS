@@ -2,7 +2,7 @@
 
 Notable changes to TinyArmOS are documented here. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic versioning for releases.
 
-## [Unreleased]
+## [0.4.1] - 2026-09-02
 
 ### Added
 
@@ -18,4 +18,5 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 - Shell navigation, file-management commands, and 256-line scrollback.
 - Source builders for a bootable GPT/FAT32 image and UTM bundle.
 
+[0.4.1]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.4.1
 [0.4.0]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.4.0

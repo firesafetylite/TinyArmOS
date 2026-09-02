@@ -820,7 +820,7 @@ static void fs_restore_system(void) {
         runtime = fs_ensure_dir((UINTN)system, "runtime", FS_PROTECTED);
         security = fs_ensure_dir((UINTN)system, "security", FS_PROTECTED);
         fs_ensure_file((UINTN)system, "version.txt",
-            "TinyArmOS 0.4\narchitecture=ARM64\nfirmware=UEFI\nkernel=freestanding\nfilesystem=MiniFS2\nunix=no", FS_PROTECTED);
+            "TinyArmOS 0.4.1\narchitecture=ARM64\nfirmware=UEFI\nkernel=freestanding\nfilesystem=MiniFS2\nunix=no", FS_PROTECTED);
         fs_ensure_file((UINTN)system, "manifest.txt",
             "Critical tree:\n/system/boot       loader and startup records\n/system/kernel     core, ABI, and memory records\n/system/firmware   UEFI interface records\n/system/config     boot and shell policy\n/system/drivers    hardware service records\n/system/runtime    MiniFS2 runtime records\n/system/security   integrity and protected paths\n/apps              installed native applications\n/recovery          repair and snapshot records", FS_PROTECTED);
     }
@@ -1294,7 +1294,7 @@ static int boot_screen(EFI_HANDLE imageHandle) {
         "                    /___/\n\n"
     );
     gST->ConOut->SetAttribute(gST->ConOut, 0x07);
-    print("  TinyArmOS 0.4 verified startup\n\n");
+    print("  TinyArmOS 0.4.1 verified startup\n\n");
     boot_stage(1, "ARM64 firmware and timer", 1);
     gStorageReady = (UINT8)storage_init(imageHandle);
     boot_stage(2, gStorageReady ? "persistent UEFI storage" : "volatile fallback storage", 1);
@@ -1486,7 +1486,7 @@ static void command_help(void) {
 }
 
 static void command_info(void) {
-    print("TinyArmOS 0.4\n");
+    print("TinyArmOS 0.4.1\n");
     print("Architecture : ARM64 / AArch64\n");
     print("Boot method  : UEFI (BOOTAA64.EFI)\n");
     print("Filesystem   : MiniFS2, 96 hierarchical nodes, 2 snapshots\n");
@@ -1817,7 +1817,7 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     scrollback_enable();
     gST->ConOut->ClearScreen(gST->ConOut);
     gST->ConOut->SetAttribute(gST->ConOut, 0x0b);
-    print("TinyArmOS 0.4");
+    print("TinyArmOS 0.4.1");
     gST->ConOut->SetAttribute(gST->ConOut, 0x07);
     print(" - ARM64 shell + MiniFS2\n");
     print("Recovery Agent: healthy. Type 'help'.\n\n");
