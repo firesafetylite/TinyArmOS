@@ -37,7 +37,7 @@ jobs:
       - name: Verify firmware outputs
         run: |
           test "$(stat -c '%s' build/TinyArmOS-QEMU_EFI.fd)" -eq 67108864
-          test -s build/TinyArmOS-QEMU_EFI-vars.fd
+          test "$(stat -c '%s' build/TinyArmOS-QEMU_EFI-vars.fd)" -eq 67108864
           test -s build/TinyArmOS-QEMU_EFI-ca-certs.esl
           test "$(stat -c '%s' build/TinyArmOS-QEMU_EFI-ca-certs.esl)" -eq 2138
           sha256sum build/TinyArmOS-QEMU_EFI.fd build/TinyArmOS-QEMU_EFI-vars.fd build/TinyArmOS-QEMU_EFI-ca-certs.esl

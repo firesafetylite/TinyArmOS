@@ -7,6 +7,8 @@
 #define UPDATE_MAX_URL_BYTES 4096U
 #define UPDATE_MAX_REDIRECTS 8U
 #define UPDATE_HTTP_TIMEOUT_SECONDS 30U
+#define UPDATE_DHCP_TIMEOUT_SECONDS 10U
+#define UPDATE_LOCATE_ALL_HANDLES 0U
 
 typedef struct EFI_SERVICE_BINDING_PROTOCOL EFI_SERVICE_BINDING_PROTOCOL;
 typedef EFI_STATUS (EFIAPI *EFI_SERVICE_BINDING_CREATE_CHILD)(EFI_SERVICE_BINDING_PROTOCOL *, EFI_HANDLE *);
@@ -19,6 +21,28 @@ struct EFI_SERVICE_BINDING_PROTOCOL {
 typedef struct {
     UINT8 Addr[4];
 } EFI_IPv4_ADDRESS;
+
+typedef struct UPDATE_IP4_CONFIG2_PROTOCOL UPDATE_IP4_CONFIG2_PROTOCOL;
+typedef EFI_STATUS (EFIAPI *UPDATE_IP4_CONFIG2_SET_DATA)(UPDATE_IP4_CONFIG2_PROTOCOL *, UINT32, UINTN, void *);
+typedef EFI_STATUS (EFIAPI *UPDATE_IP4_CONFIG2_GET_DATA)(UPDATE_IP4_CONFIG2_PROTOCOL *, UINT32, UINTN *, void *);
+struct UPDATE_IP4_CONFIG2_PROTOCOL {
+    UPDATE_IP4_CONFIG2_SET_DATA SetData;
+    UPDATE_IP4_CONFIG2_GET_DATA GetData;
+    void *RegisterDataNotify;
+    void *UnregisterDataNotify;
+};
+
+#define UPDATE_IP4_CONFIG2_POLICY 1U
+#define UPDATE_IP4_CONFIG2_MANUAL_ADDRESS 2U
+#define UPDATE_IP4_CONFIG2_GATEWAY 3U
+#define UPDATE_IP4_CONFIG2_DNS_SERVER 4U
+#define UPDATE_IP4_POLICY_STATIC 0U
+#define UPDATE_IP4_POLICY_DHCP 1U
+
+typedef struct {
+    EFI_IPv4_ADDRESS Address;
+    EFI_IPv4_ADDRESS SubnetMask;
+} UPDATE_IP4_MANUAL_ADDRESS;
 
 typedef enum {
     HttpVersion10,
@@ -169,6 +193,9 @@ typedef struct {
     UINTN blockLength;
 } UPDATE_SHA256;
 
+static EFI_GUID gUpdateIp4Config2ProtocolGuid = {
+    0x5b446ed1, 0xe30b, 0x4faa, {0x87,0x1a,0x36,0x54,0xec,0xa3,0x60,0x80}
+};
 static EFI_GUID gUpdateHttpServiceBindingGuid = {
     0xbdc8e6af, 0xd9bc, 0x4379, {0xa7,0x2a,0xe0,0xc4,0xe7,0x5d,0xae,0x1c}
 };
@@ -483,12 +510,103 @@ static void update_http_close(UPDATE_HTTP_SESSION *session) {
     session->http = (EFI_HTTP_PROTOCOL *)0;
 }
 
+static void update_connect_controllers(void) {
+    EFI_HANDLE *handles = (EFI_HANDLE *)0;
+    UINTN handleCount = 0;
+    UINTN index;
+    EFI_STATUS status;
+    if (!gST->BootServices->LocateHandleBuffer || !gST->BootServices->ConnectController) return;
+    status = gST->BootServices->LocateHandleBuffer(UPDATE_LOCATE_ALL_HANDLES, (EFI_GUID *)0,
+        (void *)0, &handleCount, &handles);
+    if (status != EFI_SUCCESS || !handles) return;
+    for (index = 0; index < handleCount; index++) {
+        gST->BootServices->ConnectController(handles[index], (EFI_HANDLE *)0, (void *)0, 1);
+    }
+    gST->BootServices->FreePool(handles);
+}
+
+static EFI_STATUS update_report_firmware_error(const char *stage, EFI_STATUS status) {
+    print("Firmware network ");
+    print(stage);
+    print(" failed (UEFI status ");
+    print_hex(status);
+    print(").\n");
+    return status;
+}
+
+static EFI_STATUS update_prepare_ipv4(void) {
+    UPDATE_IP4_CONFIG2_PROTOCOL *config = (UPDATE_IP4_CONFIG2_PROTOCOL *)0;
+    UPDATE_IP4_MANUAL_ADDRESS manual;
+    EFI_IPv4_ADDRESS gateway = {{10, 0, 2, 2}};
+    EFI_IPv4_ADDRESS dns = {{10, 0, 2, 3}};
+    UINT32 policy = UPDATE_IP4_POLICY_DHCP;
+    UINTN size;
+    UINTN attempt;
+    EFI_STATUS status;
+    status = gST->BootServices->LocateProtocol(&gUpdateIp4Config2ProtocolGuid, (void *)0,
+        (void **)&config);
+    if (status != EFI_SUCCESS || !config) return status == EFI_SUCCESS ? EFI_NOT_FOUND : status;
+    size = 0;
+    status = config->GetData(config, UPDATE_IP4_CONFIG2_GATEWAY, &size, (void *)0);
+    if (status == EFI_BUFFER_TOO_SMALL && size >= sizeof(EFI_IPv4_ADDRESS)) return EFI_SUCCESS;
+    size = sizeof(policy);
+    status = config->GetData(config, UPDATE_IP4_CONFIG2_POLICY, &size, &policy);
+    if (status != EFI_SUCCESS || policy != UPDATE_IP4_POLICY_DHCP) {
+        policy = UPDATE_IP4_POLICY_DHCP;
+        status = config->SetData(config, UPDATE_IP4_CONFIG2_POLICY, sizeof(policy), &policy);
+        if (status != EFI_SUCCESS && status != EFI_NOT_READY && status != EFI_ABORTED)
+            return update_report_firmware_error("DHCP policy", status);
+    }
+    for (attempt = 0; attempt < UPDATE_DHCP_TIMEOUT_SECONDS * 5U; attempt++) {
+        size = 0;
+        status = config->GetData(config, UPDATE_IP4_CONFIG2_GATEWAY, &size, (void *)0);
+        if (status == EFI_BUFFER_TOO_SMALL && size >= sizeof(EFI_IPv4_ADDRESS)) return EFI_SUCCESS;
+        if (status != EFI_NOT_READY && status != EFI_NOT_FOUND && status != EFI_BUFFER_TOO_SMALL) return status;
+        if (gST->BootServices->Stall) gST->BootServices->Stall(200000U);
+    }
+
+    /* UTM's Shared Network is QEMU user networking. Fall back to its stable
+       addressing when a firmware DHCP client cannot obtain a lease. */
+    print("Firmware DHCP timed out; trying UTM Shared Network defaults.\n");
+    policy = UPDATE_IP4_POLICY_STATIC;
+    status = config->SetData(config, UPDATE_IP4_CONFIG2_POLICY, sizeof(policy), &policy);
+    if (status != EFI_SUCCESS && status != EFI_NOT_READY && status != EFI_ABORTED)
+        return update_report_firmware_error("static policy", status);
+    memory_zero(&manual, sizeof(manual));
+    manual.Address.Addr[0] = 10; manual.Address.Addr[1] = 0;
+    manual.Address.Addr[2] = 2; manual.Address.Addr[3] = 15;
+    manual.SubnetMask.Addr[0] = 255; manual.SubnetMask.Addr[1] = 255;
+    manual.SubnetMask.Addr[2] = 255; manual.SubnetMask.Addr[3] = 0;
+    status = config->SetData(config, UPDATE_IP4_CONFIG2_MANUAL_ADDRESS,
+        sizeof(manual), &manual);
+    if (status != EFI_SUCCESS && status != EFI_NOT_READY && status != EFI_ABORTED)
+        return update_report_firmware_error("static address", status);
+    for (attempt = 0; attempt < 25U; attempt++) {
+        size = 0;
+        status = config->GetData(config, UPDATE_IP4_CONFIG2_MANUAL_ADDRESS, &size, (void *)0);
+        if (status == EFI_BUFFER_TOO_SMALL && size >= sizeof(manual)) break;
+        if (status != EFI_NOT_READY && status != EFI_NOT_FOUND && status != EFI_BUFFER_TOO_SMALL) return status;
+        if (gST->BootServices->Stall) gST->BootServices->Stall(200000U);
+    }
+    if (attempt == 25U) return update_report_firmware_error("static address mapping", EFI_NO_MAPPING);
+    status = config->SetData(config, UPDATE_IP4_CONFIG2_GATEWAY, sizeof(gateway), &gateway);
+    if (status != EFI_SUCCESS && status != EFI_ABORTED)
+        return update_report_firmware_error("static gateway", status);
+    status = config->SetData(config, UPDATE_IP4_CONFIG2_DNS_SERVER, sizeof(dns), &dns);
+    if (status != EFI_SUCCESS && status != EFI_ABORTED)
+        return update_report_firmware_error("static DNS", status);
+    return EFI_SUCCESS;
+}
+
 static EFI_STATUS update_http_open(UPDATE_HTTP_SESSION *session) {
     EFI_HTTPv4_ACCESS_POINT access;
     EFI_HTTP_CONFIG_DATA config;
     EFI_STATUS status;
     UINTN attempt;
     memory_zero(session, sizeof(*session));
+    update_connect_controllers();
+    status = update_prepare_ipv4();
+    if (status != EFI_SUCCESS) return status;
     status = gST->BootServices->LocateProtocol(&gUpdateHttpServiceBindingGuid, (void *)0,
         (void **)&session->binding);
     if (status != EFI_SUCCESS || !session->binding) return status == EFI_SUCCESS ? EFI_NOT_FOUND : status;
@@ -517,7 +635,7 @@ static EFI_STATUS update_http_open(UPDATE_HTTP_SESSION *session) {
         if (gST->BootServices->Stall) gST->BootServices->Stall(200000U);
     }
     update_http_close(session);
-    return status;
+    return update_report_firmware_error("HTTP configuration", status);
 }
 
 static int update_http_redirect(EFI_HTTP_STATUS_CODE code) {
@@ -543,6 +661,7 @@ static EFI_STATUS update_http_fetch_once(const char *url, UINT8 *buffer, UINTN c
     volatile UINT8 requestDone = 0;
     volatile UINT8 responseDone = 0;
     EFI_STATUS status;
+    const char *stage = "HTTP setup";
     CHAR16 wideUrl[UPDATE_MAX_URL_BYTES];
     char host[160];
     UINTN expected = 0;
@@ -559,9 +678,11 @@ static EFI_STATUS update_http_fetch_once(const char *url, UINT8 *buffer, UINTN c
     memory_zero(&responseToken, sizeof(responseToken));
     status = update_http_open(&session);
     if (status != EFI_SUCCESS) return status;
+    stage = "request event";
     status = gST->BootServices->CreateEvent(EVT_NOTIFY_SIGNAL, TPL_CALLBACK, update_http_notify,
         (void *)&requestDone, &requestEvent);
     if (status != EFI_SUCCESS) goto cleanup;
+    stage = "response event";
     status = gST->BootServices->CreateEvent(EVT_NOTIFY_SIGNAL, TPL_CALLBACK, update_http_notify,
         (void *)&responseDone, &responseEvent);
     if (status != EFI_SUCCESS) goto cleanup;
@@ -581,8 +702,10 @@ static EFI_STATUS update_http_fetch_once(const char *url, UINT8 *buffer, UINTN c
     requestToken.Event = requestEvent;
     requestToken.Status = EFI_NOT_READY;
     requestToken.Message = &requestMessage;
+    stage = "request queue";
     status = session.http->Request(session.http, &requestToken);
     if (status != EFI_SUCCESS) goto cleanup;
+    stage = "request completion";
     status = update_http_wait(&session, &requestToken, &requestDone);
     if (status != EFI_SUCCESS) goto cleanup;
     memory_zero(&responseData, sizeof(responseData));
@@ -593,8 +716,10 @@ static EFI_STATUS update_http_fetch_once(const char *url, UINT8 *buffer, UINTN c
     responseToken.Event = responseEvent;
     responseToken.Status = EFI_NOT_READY;
     responseToken.Message = &responseMessage;
+    stage = "response queue";
     status = session.http->Response(session.http, &responseToken);
     if (status != EFI_SUCCESS) goto cleanup;
+    stage = "response completion";
     status = update_http_wait(&session, &responseToken, &responseDone);
     if (status != EFI_SUCCESS && status != EFI_HTTP_ERROR) goto cleanup;
     *responseCode = responseData.StatusCode;
@@ -650,6 +775,8 @@ static EFI_STATUS update_http_fetch_once(const char *url, UINT8 *buffer, UINTN c
     *received = used;
     status = EFI_SUCCESS;
 cleanup:
+    if (status != EFI_SUCCESS && status != EFI_HTTP_ERROR)
+        update_report_firmware_error(stage, status);
     update_free_headers(&responseMessage);
     if (requestEvent) gST->BootServices->CloseEvent(requestEvent);
     if (responseEvent) gST->BootServices->CloseEvent(responseEvent);

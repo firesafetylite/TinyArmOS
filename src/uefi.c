@@ -12,6 +12,7 @@ typedef UINT64             EFI_STATUS;
 #define EFI_SUCCESS            0
 #define EFI_ERROR_MASK         0x8000000000000000ULL
 #define EFI_UNSUPPORTED        (EFI_ERROR_MASK | 3ULL)
+#define EFI_BUFFER_TOO_SMALL   (EFI_ERROR_MASK | 5ULL)
 #define EFI_NOT_READY          (EFI_ERROR_MASK | 6ULL)
 #define EFI_DEVICE_ERROR       (EFI_ERROR_MASK | 7ULL)
 #define EFI_OUT_OF_RESOURCES   (EFI_ERROR_MASK | 9ULL)
@@ -127,6 +128,8 @@ typedef EFI_STATUS (EFIAPI *EFI_CLOSE_EVENT)(EFI_EVENT);
 typedef EFI_STATUS (EFIAPI *EFI_HANDLE_PROTOCOL)(EFI_HANDLE, EFI_GUID *, void **);
 typedef EFI_STATUS (EFIAPI *EFI_STALL)(UINTN);
 typedef EFI_STATUS (EFIAPI *EFI_SET_WATCHDOG_TIMER)(UINTN, UINT64, UINTN, CHAR16 *);
+typedef EFI_STATUS (EFIAPI *EFI_CONNECT_CONTROLLER)(EFI_HANDLE, EFI_HANDLE *, void *, UINT8);
+typedef EFI_STATUS (EFIAPI *EFI_LOCATE_HANDLE_BUFFER)(UINT32, EFI_GUID *, void *, UINTN *, EFI_HANDLE **);
 typedef EFI_STATUS (EFIAPI *EFI_LOCATE_PROTOCOL)(EFI_GUID *, void *, void **);
 typedef struct {
     EFI_TABLE_HEADER Hdr;
@@ -144,7 +147,9 @@ typedef struct {
     void *BeforeStall[11];
     EFI_STALL Stall;
     EFI_SET_WATCHDOG_TIMER SetWatchdogTimer;
-    void *BeforeLocateProtocol[7];
+    EFI_CONNECT_CONTROLLER ConnectController;
+    void *BeforeLocateHandleBuffer[5];
+    EFI_LOCATE_HANDLE_BUFFER LocateHandleBuffer;
     EFI_LOCATE_PROTOCOL LocateProtocol;
 } EFI_BOOT_SERVICES_PREFIX;
 

@@ -16,7 +16,7 @@ jobs:
   release:
     name: Build and publish release
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
@@ -33,7 +33,18 @@ jobs:
           python -m pip install --disable-pip-version-check ziglang==0.14.1
           python -m ziglang version
 
+      - name: Install EDK2 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            acpica-tools build-essential gcc-aarch64-linux-gnu nasm uuid-dev
+
+      - name: Build pinned HTTP/TLS firmware
+        run: tools/build_uefi_firmware.sh build/TinyArmOS-QEMU_EFI.fd
+
       - name: Rebuild from source
+        env:
+          TINYARMOS_REQUIRE_UEFI_FIRMWARE: "1"
         run: make
 
       - name: Verify build outputs
@@ -44,7 +55,11 @@ jobs:
           test "$(stat -c '%s' build/TinyArmOS-UTM.img)" -eq 67108864
           test -f build/TinyArmOS.utm/config.plist
           test -f build/TinyArmOS.utm/Images/disk-0.img
+          test -f build/TinyArmOS.utm/Images/tinyarmos-uefi-code.fd
+          test -f build/TinyArmOS.utm/Images/tinyarmos-uefi-vars.fd
           cmp build/TinyArmOS-UTM.img build/TinyArmOS.utm/Images/disk-0.img
+          cmp build/TinyArmOS-QEMU_EFI.fd build/TinyArmOS.utm/Images/tinyarmos-uefi-code.fd
+          cmp build/TinyArmOS-QEMU_EFI-vars.fd build/TinyArmOS.utm/Images/tinyarmos-uefi-vars.fd
           file build/BOOTAA64.EFI | grep -Eq 'PE32\+ executable.*Aarch64'
           python - <<'PY'
           import plistlib
@@ -57,7 +72,15 @@ jobs:
               config = plistlib.load(stream)
           assert config["System"]["Architecture"] == "aarch64"
           assert config["System"]["BootUefi"] is True
-          assert config["Drives"][0]["ImagePath"] == "disk-0.img"
+          assert config["System"]["Memory"] >= 256
+          assert [drive["ImagePath"] for drive in config["Drives"]] == [
+              "tinyarmos-uefi-code.fd",
+              "tinyarmos-uefi-vars.fd",
+              "disk-0.img",
+          ]
+          assert [drive["InterfaceType"] for drive in config["Drives"]] == [
+              "pflash", "pflash", "virtio"
+          ]
           assert config["Networking"]["NetworkEnabled"] is True
           assert config["Networking"]["NetworkCard"] == "virtio-net-pci"
           PY

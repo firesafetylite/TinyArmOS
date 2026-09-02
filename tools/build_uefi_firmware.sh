@@ -31,6 +31,19 @@ python3 "$repo_root/tools/make_uefi_ca_bundle.py" \
   "$repo_root/firmware/certs/usertrust-ecc-certification-authority.pem" \
   "$repo_root/firmware/certs/isrg-root-x1.pem"
 
+python3 - ArmVirtPkg/ArmVirtQemu.dsc <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+old = "[LibraryClasses.common.UEFI_DRIVER]\n  UefiScsiLib|MdePkg/Library/UefiScsiLib/UefiScsiLib.inf\n"
+new = old + "  RngLib|MdePkg/Library/DxeRngLib/DxeRngLib.inf\n"
+if old not in text:
+    raise SystemExit("EDK2 UEFI driver library section did not match the pinned source")
+path.write_text(text.replace(old, new, 1))
+PY
+
 python3 - OvmfPkg/Library/TlsAuthConfigLib/TlsAuthConfigLib.c <<'PY'
 from pathlib import Path
 import sys
@@ -120,11 +133,19 @@ build -a AARCH64 -t GCC5 -b RELEASE -p ArmVirtPkg/ArmVirtQemu.dsc \
 
 firmware=Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/QEMU_EFI.fd
 variables=Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/QEMU_VARS.fd
+ffs=Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/Ffs
 test -s "$firmware"
 test -s "$variables"
+for module in VirtioNetDxe VirtioRngDxe Dhcp4Dxe DnsDxe HttpDxe TlsDxe TlsAuthConfigDxe; do
+  find "$ffs" -maxdepth 1 -type d -name "*_${module}" -print -quit | grep -q . || {
+    echo "Required firmware module is missing: $module" >&2
+    exit 1
+  }
+done
 mkdir -p "$(dirname "$output")"
 cp "$firmware" "$output"
 truncate -s 67108864 "$output"
 cp "$variables" "${output%.fd}-vars.fd"
+truncate -s 67108864 "${output%.fd}-vars.fd"
 cp "$work/TinyArmOS-ca-certs.esl" "${output%.fd}-ca-certs.esl"
 sha256sum "$output" "${output%.fd}-vars.fd" "${output%.fd}-ca-certs.esl"
