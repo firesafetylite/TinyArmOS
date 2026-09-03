@@ -4,6 +4,7 @@ typedef unsigned short     UINT16;
 typedef unsigned int       UINT32;
 typedef unsigned long long UINT64;
 typedef unsigned long long UINTN;
+typedef signed short       INT16;
 typedef int                INT32;
 typedef UINT16             CHAR16;
 typedef void              *EFI_HANDLE;
@@ -27,7 +28,7 @@ typedef UINT64             EFI_STATUS;
 
 #define EVT_NOTIFY_SIGNAL 0x00000200U
 #define TPL_CALLBACK      8U
-#define TINYARMOS_VERSION "0.1.3"
+#define TINYARMOS_VERSION "0.1.4"
 
 struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
 struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
@@ -194,6 +195,41 @@ typedef struct EFI_FILE_PROTOCOL {
     EFI_FILE_FLUSH Flush;
 } EFI_FILE_PROTOCOL;
 
+typedef struct {
+    UINT16 Year;
+    UINT8 Month;
+    UINT8 Day;
+    UINT8 Hour;
+    UINT8 Minute;
+    UINT8 Second;
+    UINT8 Pad1;
+    UINT32 Nanosecond;
+    INT16 TimeZone;
+    UINT8 Daylight;
+    UINT8 Pad2;
+} EFI_TIME;
+
+typedef struct {
+    UINT64 Size;
+    UINT64 FileSize;
+    UINT64 PhysicalSize;
+    EFI_TIME CreateTime;
+    EFI_TIME LastAccessTime;
+    EFI_TIME ModificationTime;
+    UINT64 Attribute;
+    CHAR16 FileName[1];
+} EFI_FILE_INFO;
+
+typedef struct {
+    UINT64 Size;
+    UINT8 ReadOnly;
+    UINT8 Reserved[7];
+    UINT64 VolumeSize;
+    UINT64 FreeSpace;
+    UINT32 BlockSize;
+    CHAR16 VolumeLabel[1];
+} EFI_FILE_SYSTEM_INFO;
+
 typedef EFI_STATUS (EFIAPI *EFI_OPEN_VOLUME)(void *, EFI_FILE_PROTOCOL **);
 typedef struct {
     UINT64 Revision;
@@ -259,9 +295,13 @@ typedef struct {
     void *ConfigurationTable;
 } EFI_SYSTEM_TABLE;
 
-#define EFI_FILE_MODE_READ   0x0000000000000001ULL
-#define EFI_FILE_MODE_WRITE  0x0000000000000002ULL
-#define EFI_FILE_MODE_CREATE 0x8000000000000000ULL
+#define EFI_FILE_MODE_READ      0x0000000000000001ULL
+#define EFI_FILE_MODE_WRITE     0x0000000000000002ULL
+#define EFI_FILE_MODE_CREATE    0x8000000000000000ULL
+#define EFI_FILE_READ_ONLY      0x0000000000000001ULL
+#define EFI_FILE_DIRECTORY      0x0000000000000010ULL
+#define EFI_FILE_INFO_NAME_BASE 80U
+#define EFI_FILE_INFO_CAPACITY  2048U
 
 #define FS_MAX_NODES  96
 #define FS_NAME_BYTES 32
@@ -287,7 +327,9 @@ static UINT64 gGeneration;
 static UINT64 gSlotGeneration[2];
 static UINT8 gSlotValid[2];
 static UINT8 gStorageReady;
+static UINT8 gDedicatedStorage;
 static UINT8 gProtectionUnlocked;
+static CHAR16 gLoadedImagePath[260];
 static UINTN gCwd;
 static UINTN gPreviousCwd;
 static char gScrollback[SCROLLBACK_LINES][SCROLLBACK_COLUMNS];
@@ -621,6 +663,97 @@ static char *next_argument(char *text, char **remainder) {
 
 static const CHAR16 gSlot0Path[] = {'\\','T','I','N','Y','F','S','0','.','B','I','N',0};
 static const CHAR16 gSlot1Path[] = {'\\','T','I','N','Y','F','S','1','.','B','I','N',0};
+static const CHAR16 gBootPath[] = {
+    '\\','E','F','I','\\','B','O','O','T','\\','B','O','O','T','A','A','6','4','.','E','F','I',0
+};
+static const CHAR16 gBootBackupPath[] = {
+    '\\','E','F','I','\\','B','O','O','T','\\','B','O','O','T','A','A','6','4','.','B','A','K',0
+};
+static const CHAR16 gBootStagePath[] = {
+    '\\','E','F','I','\\','B','O','O','T','\\','B','O','O','T','A','A','6','4','.','N','E','W',0
+};
+static const CHAR16 gStartupPath[] = {'\\','S','T','A','R','T','U','P','.','N','S','H',0};
+static const CHAR16 gDoomWadPath[] = {'\\','D','O','O','M','U','.','W','A','D',0};
+static const CHAR16 gDoomConfigPath[] = {'\\','D','O','O','M','.','C','F','G',0};
+static const CHAR16 gBootDirectoryPath[] = {'\\','E','F','I','\\','B','O','O','T',0};
+static const CHAR16 gEfiDirectoryPath[] = {'\\','E','F','I',0};
+static EFI_GUID gFileInfoGuid = {0x09576e92, 0x6d3f, 0x11d2, {0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
+static EFI_GUID gFileSystemInfoGuid = {0x09576e93, 0x6d3f, 0x11d2, {0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
+
+static int char16_equals_ascii(const CHAR16 *wide, const char *ascii) {
+    UINTN index = 0;
+    while (wide[index] && ascii[index]) {
+        CHAR16 left = wide[index];
+        char right = ascii[index];
+        if (left >= 'a' && left <= 'z') left = (CHAR16)(left - ('a' - 'A'));
+        if (right >= 'a' && right <= 'z') right = (char)(right - ('a' - 'A'));
+        if (left != (CHAR16)(UINT8)right) return 0;
+        index++;
+    }
+    return wide[index] == 0 && ascii[index] == 0;
+}
+
+static int char16_equals(const CHAR16 *left, const CHAR16 *right) {
+    UINTN index = 0;
+    while (left[index] && right[index]) {
+        CHAR16 a = left[index];
+        CHAR16 b = right[index];
+        if (a >= 'a' && a <= 'z') a = (CHAR16)(a - ('a' - 'A'));
+        if (b >= 'a' && b <= 'z') b = (CHAR16)(b - ('a' - 'A'));
+        if (a != b) return 0;
+        index++;
+    }
+    return left[index] == 0 && right[index] == 0;
+}
+
+static int storage_capture_loaded_path(void *filePath) {
+    UINT8 *node = (UINT8 *)filePath;
+    UINTN traversed = 0;
+    UINTN used = 0;
+    memory_zero(gLoadedImagePath, sizeof(gLoadedImagePath));
+    while (node && traversed + 4 <= 4096U) {
+        UINTN length = (UINTN)node[2] | ((UINTN)node[3] << 8);
+        if (length < 4 || traversed + length > 4096U) break;
+        if (node[0] == 0x7fU) break;
+        if (node[0] == 0x04U && node[1] == 0x04U) {
+            CHAR16 *segment = (CHAR16 *)(void *)(node + 4);
+            UINTN characters = (length - 4) / sizeof(CHAR16);
+            UINTN index;
+            for (index = 0; index < characters && segment[index]; index++) {
+                if (used + 1 >= sizeof(gLoadedImagePath) / sizeof(gLoadedImagePath[0])) {
+                    gLoadedImagePath[0] = 0;
+                    return 0;
+                }
+                gLoadedImagePath[used++] = segment[index];
+            }
+        }
+        traversed += length;
+        node += length;
+    }
+    gLoadedImagePath[used] = 0;
+    return used != 0;
+}
+
+static int storage_path_exists(const CHAR16 *path) {
+    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
+    EFI_STATUS status;
+    if (!gVolumeRoot || !path || !path[0]) return 0;
+    status = gVolumeRoot->Open(gVolumeRoot, &file, (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
+    if (status != EFI_SUCCESS || !file) return 0;
+    file->Close(file);
+    return 1;
+}
+
+static int storage_volume_is_dedicated(void) {
+    UINT64 storage[64];
+    EFI_FILE_SYSTEM_INFO *information = (EFI_FILE_SYSTEM_INFO *)(void *)storage;
+    UINTN bytes = sizeof(storage);
+    EFI_STATUS status;
+    if (!gVolumeRoot || !gLoadedImagePath[0]) return 0;
+    status = gVolumeRoot->GetInfo(gVolumeRoot, &gFileSystemInfoGuid, &bytes, information);
+    if (status != EFI_SUCCESS || bytes < 38U || information->Size < 38U || information->Size > bytes) return 0;
+    return char16_equals_ascii(information->VolumeLabel, "TINYARMOS") && storage_path_exists(gLoadedImagePath);
+}
 
 static int storage_init(EFI_HANDLE imageHandle) {
     static EFI_GUID loadedImageGuid = {0x5b1b31a1, 0x9562, 0x11d2, {0x8e,0x3f,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
@@ -628,12 +761,254 @@ static int storage_init(EFI_HANDLE imageHandle) {
     EFI_LOADED_IMAGE_PROTOCOL *loadedImage = (EFI_LOADED_IMAGE_PROTOCOL *)0;
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *filesystem = (EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *)0;
     EFI_STATUS status;
+    gDedicatedStorage = 0;
     status = gST->BootServices->HandleProtocol(imageHandle, &loadedImageGuid, (void **)&loadedImage);
     if (status != EFI_SUCCESS || !loadedImage) return 0;
+    storage_capture_loaded_path(loadedImage->FilePath);
     status = gST->BootServices->HandleProtocol(loadedImage->DeviceHandle, &simpleFsGuid, (void **)&filesystem);
     if (status != EFI_SUCCESS || !filesystem) return 0;
     status = filesystem->OpenVolume(filesystem, &gVolumeRoot);
-    return status == EFI_SUCCESS && gVolumeRoot;
+    if (status != EFI_SUCCESS || !gVolumeRoot) return 0;
+    gDedicatedStorage = (UINT8)storage_volume_is_dedicated();
+    return 1;
+}
+
+typedef struct {
+    UINT64 attribute;
+    CHAR16 name[260];
+} STORAGE_ENTRY;
+
+static int storage_file_info_valid(EFI_FILE_INFO *information, UINTN bytes, UINTN *nameCharacters) {
+    UINTN available;
+    UINTN index;
+    if (bytes < EFI_FILE_INFO_NAME_BASE + sizeof(CHAR16) ||
+        information->Size < EFI_FILE_INFO_NAME_BASE + sizeof(CHAR16) ||
+        information->Size > bytes) return 0;
+    available = (information->Size - EFI_FILE_INFO_NAME_BASE) / sizeof(CHAR16);
+    for (index = 0; index < available; index++) {
+        if (!information->FileName[index]) {
+            *nameCharacters = index;
+            return index != 0;
+        }
+    }
+    return 0;
+}
+
+static int storage_dot_entry(const CHAR16 *name) {
+    return name[0] == '.' && (!name[1] || (name[1] == '.' && !name[2]));
+}
+
+static int storage_collect_entries(EFI_FILE_PROTOCOL *directory, STORAGE_ENTRY **entriesOut, UINTN *countOut) {
+    void *informationBuffer = (void *)0;
+    UINTN informationCapacity = EFI_FILE_INFO_CAPACITY;
+    STORAGE_ENTRY *entries = (STORAGE_ENTRY *)0;
+    UINTN entryCapacity = 0;
+    UINTN count = 0;
+    EFI_STATUS status;
+    if (gST->BootServices->AllocatePool(2, informationCapacity, &informationBuffer) != EFI_SUCCESS) return 0;
+    status = directory->SetPosition(directory, 0);
+    if (status != EFI_SUCCESS) goto failure;
+    for (;;) {
+        EFI_FILE_INFO *information;
+        UINTN bytes = informationCapacity;
+        UINTN nameCharacters = 0;
+        status = directory->Read(directory, &bytes, informationBuffer);
+        if (status == EFI_BUFFER_TOO_SMALL) {
+            void *larger = (void *)0;
+            if (bytes <= informationCapacity || bytes > 65536U ||
+                gST->BootServices->AllocatePool(2, bytes, &larger) != EFI_SUCCESS) goto failure;
+            gST->BootServices->FreePool(informationBuffer);
+            informationBuffer = larger;
+            informationCapacity = bytes;
+            continue;
+        }
+        if (status != EFI_SUCCESS) goto failure;
+        if (!bytes) break;
+        information = (EFI_FILE_INFO *)informationBuffer;
+        if (!storage_file_info_valid(information, bytes, &nameCharacters)) goto failure;
+        if (storage_dot_entry(information->FileName)) continue;
+        if (nameCharacters + 1 > sizeof(entries[0].name) / sizeof(entries[0].name[0])) goto failure;
+        if (count == entryCapacity) {
+            STORAGE_ENTRY *larger;
+            UINTN newCapacity = entryCapacity ? entryCapacity * 2 : 8;
+            if (newCapacity < entryCapacity ||
+                gST->BootServices->AllocatePool(2, newCapacity * sizeof(STORAGE_ENTRY), (void **)&larger) != EFI_SUCCESS) goto failure;
+            if (entries) {
+                memory_copy(larger, entries, count * sizeof(STORAGE_ENTRY));
+                gST->BootServices->FreePool(entries);
+            }
+            entries = larger;
+            entryCapacity = newCapacity;
+        }
+        entries[count].attribute = information->Attribute;
+        memory_copy(entries[count].name, information->FileName, (nameCharacters + 1) * sizeof(CHAR16));
+        count++;
+    }
+    gST->BootServices->FreePool(informationBuffer);
+    *entriesOut = entries;
+    *countOut = count;
+    return 1;
+failure:
+    if (entries) gST->BootServices->FreePool(entries);
+    gST->BootServices->FreePool(informationBuffer);
+    *entriesOut = (STORAGE_ENTRY *)0;
+    *countOut = 0;
+    return 0;
+}
+
+static int storage_clear_read_only(EFI_FILE_PROTOCOL *file) {
+    EFI_FILE_INFO *information = (EFI_FILE_INFO *)0;
+    UINTN bytes = 0;
+    UINTN nameCharacters = 0;
+    EFI_STATUS status = file->GetInfo(file, &gFileInfoGuid, &bytes, (void *)0);
+    if (status != EFI_BUFFER_TOO_SMALL || bytes > 65536U ||
+        gST->BootServices->AllocatePool(2, bytes, (void **)&information) != EFI_SUCCESS) return 0;
+    status = file->GetInfo(file, &gFileInfoGuid, &bytes, information);
+    if (status == EFI_SUCCESS && storage_file_info_valid(information, bytes, &nameCharacters)) {
+        if (information->Attribute & EFI_FILE_READ_ONLY) {
+            information->Attribute &= ~EFI_FILE_READ_ONLY;
+            status = file->SetInfo(file, &gFileInfoGuid, information->Size, information);
+        }
+    }
+    gST->BootServices->FreePool(information);
+    return status == EFI_SUCCESS;
+}
+
+static EFI_STATUS storage_open_for_delete(EFI_FILE_PROTOCOL *directory, CHAR16 *path, EFI_FILE_PROTOCOL **file) {
+    EFI_STATUS status = directory->Open(directory, file, path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+    if (status == EFI_SUCCESS && *file) return EFI_SUCCESS;
+    *file = (EFI_FILE_PROTOCOL *)0;
+    status = directory->Open(directory, file, path, EFI_FILE_MODE_READ, 0);
+    if (status != EFI_SUCCESS || !*file) return status;
+    storage_clear_read_only(*file);
+    (*file)->Close(*file);
+    *file = (EFI_FILE_PROTOCOL *)0;
+    return directory->Open(directory, file, path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+}
+
+static int storage_wipe_directory(EFI_FILE_PROTOCOL *directory, UINTN *removed, UINTN *failures) {
+    STORAGE_ENTRY *entries = (STORAGE_ENTRY *)0;
+    UINTN count = 0;
+    UINTN index;
+    int complete = 1;
+    if (!storage_collect_entries(directory, &entries, &count)) {
+        (*failures)++;
+        return 0;
+    }
+    for (index = 0; index < count; index++) {
+        EFI_FILE_PROTOCOL *child = (EFI_FILE_PROTOCOL *)0;
+        EFI_STATUS status = storage_open_for_delete(directory, entries[index].name, &child);
+        if (status != EFI_SUCCESS || !child) {
+            (*failures)++;
+            complete = 0;
+            continue;
+        }
+        if (entries[index].attribute & EFI_FILE_READ_ONLY) storage_clear_read_only(child);
+        if (entries[index].attribute & EFI_FILE_DIRECTORY) {
+            if (!storage_wipe_directory(child, removed, failures)) complete = 0;
+        }
+        status = child->Delete(child);
+        if (status == EFI_SUCCESS) (*removed)++;
+        else {
+            (*failures)++;
+            complete = 0;
+        }
+    }
+    if (entries) gST->BootServices->FreePool(entries);
+    return complete;
+}
+
+static int storage_delete_path(const CHAR16 *path, UINTN *removed, UINTN *failures) {
+    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
+    EFI_STATUS status = storage_open_for_delete(gVolumeRoot, (CHAR16 *)path, &file);
+    if (status == EFI_NOT_FOUND) return 1;
+    if (status != EFI_SUCCESS || !file) {
+        (*failures)++;
+        return 0;
+    }
+    storage_clear_read_only(file);
+    status = file->Delete(file);
+    if (status == EFI_SUCCESS) {
+        (*removed)++;
+        return 1;
+    }
+    (*failures)++;
+    return 0;
+}
+
+static void storage_delete_owned_startup(UINTN *removed, UINTN *failures) {
+    static const UINT8 expected[] = "fs0:\\EFI\\BOOT\\BOOTAA64.EFI\r\n";
+    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
+    UINT8 contents[sizeof(expected)];
+    UINTN bytes = sizeof(contents);
+    UINTN index;
+    int matches = 1;
+    EFI_STATUS status = storage_open_for_delete(gVolumeRoot, (CHAR16 *)gStartupPath, &file);
+    if (status == EFI_NOT_FOUND) return;
+    if (status != EFI_SUCCESS || !file) {
+        (*failures)++;
+        return;
+    }
+    status = file->Read(file, &bytes, contents);
+    if (status != EFI_SUCCESS || bytes != sizeof(expected) - 1) matches = 0;
+    for (index = 0; matches && index < bytes; index++) {
+        if (contents[index] != expected[index]) matches = 0;
+    }
+    if (!matches) {
+        file->Close(file);
+        return;
+    }
+    status = file->Delete(file);
+    if (status == EFI_SUCCESS) (*removed)++;
+    else (*failures)++;
+}
+
+static void storage_delete_empty_directory(const CHAR16 *path) {
+    EFI_FILE_PROTOCOL *directory = (EFI_FILE_PROTOCOL *)0;
+    if (storage_open_for_delete(gVolumeRoot, (CHAR16 *)path, &directory) == EFI_SUCCESS && directory) directory->Delete(directory);
+}
+
+static int storage_wipe_owned_files(UINTN *removed, UINTN *failures) {
+    CHAR16 savePath[] = {'\\','D','O','O','M','S','A','V','0','.','D','S','G',0};
+    UINTN index;
+    storage_delete_path(gSlot0Path, removed, failures);
+    storage_delete_path(gSlot1Path, removed, failures);
+    storage_delete_path(gDoomWadPath, removed, failures);
+    storage_delete_path(gDoomConfigPath, removed, failures);
+    for (index = 0; index < 10; index++) {
+        savePath[8] = (CHAR16)('0' + index);
+        storage_delete_path(savePath, removed, failures);
+    }
+    storage_delete_owned_startup(removed, failures);
+    storage_delete_path(gBootBackupPath, removed, failures);
+    storage_delete_path(gBootStagePath, removed, failures);
+    if (gLoadedImagePath[0]) storage_delete_path(gLoadedImagePath, removed, failures);
+    else (*failures)++;
+    if (char16_equals(gLoadedImagePath, gBootPath)) {
+        storage_delete_empty_directory(gBootDirectoryPath);
+        storage_delete_empty_directory(gEfiDirectoryPath);
+    }
+    return *failures == 0 && !storage_path_exists(gLoadedImagePath);
+}
+
+static int storage_wipe_os(UINTN *removed, UINTN *failures) {
+    int complete;
+    STORAGE_ENTRY *remaining = (STORAGE_ENTRY *)0;
+    UINTN remainingCount = 0;
+    *removed = 0;
+    *failures = 0;
+    if (!gVolumeRoot) return 0;
+    if (!gDedicatedStorage) return storage_wipe_owned_files(removed, failures);
+    complete = storage_wipe_directory(gVolumeRoot, removed, failures);
+    if (!storage_collect_entries(gVolumeRoot, &remaining, &remainingCount)) {
+        (*failures)++;
+        complete = 0;
+    } else if (remainingCount) {
+        (*failures) += remainingCount;
+        complete = 0;
+    }
+    if (remaining) gST->BootServices->FreePool(remaining);
+    return complete && *failures == 0;
 }
 
 static int storage_read_slot(UINTN slot, FS_NODE *output, UINT64 *generation) {
@@ -1848,7 +2223,7 @@ static void command_help(void) {
         "  mkdir PATH           create a directory\n"
         "  rm PATH              remove a file\n"
         "  rm -rf PATH          recursively remove a directory tree\n"
-        "                      / requires unlock and ERASE ROOT confirmation\n"
+        "                      exact / destroys TinyArmOS and powers off\n"
         "  rmdir PATH           remove an empty directory\n"
         "  cp SOURCE DEST       copy a file\n"
         "  mv SOURCE DEST       move or rename a node\n"
@@ -2031,26 +2406,47 @@ static void run_command(char *line) {
         int rootRequest = recursive && streq(path, "/");
         int node = rootRequest ? (int)FS_ROOT : (*path ? fs_resolve(path) : -1);
         if (node < 0) print("remove: path not found\n");
-        else if (recursive && (UINTN)node == FS_ROOT) {
-            if (!gProtectionUnlocked) {
-                print("remove: root contains protected nodes (use 'protect unlock')\n");
-            } else {
-                char answer[24];
-                print("WARNING: this erases every MiniFS2 file and directory.\n");
-                print("Type ERASE ROOT to continue: ");
-                read_line(answer, sizeof(answer));
-                if (streq(answer, "ERASE ROOT")) {
-                    gCwd = FS_ROOT;
-                    gPreviousCwd = FS_ROOT;
-                    fs_remove_recursive(FS_ROOT);
-                    if (fs_commit()) {
-                        print("removed all root filesystem contents; snapshot saved\n");
-                    } else {
-                        print("removed root contents from RAM only; data may return after reboot\n");
-                    }
-                } else print("root removal cancelled\n");
+        else if (rootRequest) {
+            UINTN removed = 0;
+            UINTN failures = 0;
+            int complete;
+            EFI_FILE_PROTOCOL *volume;
+            if (!gVolumeRoot) {
+                print("rm -rf /: EFI storage is unavailable; TinyArmOS was not erased\n");
+                return;
             }
-        } else if ((UINTN)node == FS_ROOT) print("remove: use rm -rf / for root\n");
+            print("rm -rf /: destroying TinyArmOS now\n");
+            gCwd = FS_ROOT;
+            gPreviousCwd = FS_ROOT;
+            fs_remove_recursive(FS_ROOT);
+            complete = storage_wipe_os(&removed, &failures);
+            gStorageReady = 0;
+            gSlotValid[0] = 0;
+            gSlotValid[1] = 0;
+            gSlotGeneration[0] = 0;
+            gSlotGeneration[1] = 0;
+            gGeneration = 0;
+            print("removed ");
+            print_u64(removed);
+            print(" EFI-volume entries\n");
+            if (!complete) {
+                print("rm -rf /: PARTIAL FAILURE; ");
+                print_u64(failures);
+                print(" deletion operation(s) failed\n");
+                print("Storage saving is disabled. Run rm -rf / again to retry.\n");
+                return;
+            }
+            volume = gVolumeRoot;
+            gVolumeRoot = (EFI_FILE_PROTOCOL *)0;
+            gDedicatedStorage = 0;
+            volume->Flush(volume);
+            volume->Close(volume);
+            print("TinyArmOS files, snapshots, bootloader, backup, and Freedoom data are gone.\n");
+            print("No in-OS recovery path remains. Powering off.\n");
+            delay_ms(2000);
+            gST->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, (void *)0);
+            for (;;) __asm__ volatile("wfe");
+        } else if ((UINTN)node == FS_ROOT) print("remove: only exact rm -rf / can erase root\n");
         else if (fs_is_protected((UINTN)node) && !gProtectionUnlocked) print("remove: protected system node (use 'protect unlock')\n");
         else if (!recursive && directory && gNodes[node].type != FS_DIRECTORY) print("rmdir: not a directory\n");
         else if (!directory && gNodes[node].type != FS_FILE) print("rm: use rmdir or rm -rf for directories\n");

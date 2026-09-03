@@ -15,7 +15,7 @@ def source_block(start: str, end: str) -> str:
 
 class ShellSourceTests(unittest.TestCase):
     def test_release_version(self) -> None:
-        self.assertIn('#define TINYARMOS_VERSION "0.1.3"', SOURCE)
+        self.assertIn('#define TINYARMOS_VERSION "0.1.4"', SOURCE)
 
     def test_main_help_documents_every_canonical_command(self) -> None:
         help_text = source_block(
@@ -149,22 +149,61 @@ class ShellSourceTests(unittest.TestCase):
                 self.assertIsNone(re.search(pattern, dispatch))
         self.assertNotIn('starts_with(command, "run ")', dispatch)
 
-    def test_root_recursive_remove_is_guarded(self) -> None:
+    def test_exact_root_recursive_remove_destroys_the_os(self) -> None:
         remove_dispatch = source_block(
             '} else if (starts_with(command, "rm ")',
             '} else if (starts_with(command, "cp ")',
         )
         self.assertIn('rootRequest = recursive && streq(path, "/")', remove_dispatch)
         self.assertIn("rootRequest ? (int)FS_ROOT", remove_dispatch)
-        self.assertIn("recursive && (UINTN)node == FS_ROOT", remove_dispatch)
-        self.assertIn("if (!gProtectionUnlocked)", remove_dispatch)
-        self.assertIn('streq(answer, "ERASE ROOT")', remove_dispatch)
-        self.assertIn("gCwd = FS_ROOT;", remove_dispatch)
-        self.assertIn("gPreviousCwd = FS_ROOT;", remove_dispatch)
-        self.assertIn("fs_remove_recursive(FS_ROOT);", remove_dispatch)
-        self.assertIn("if (fs_commit())", remove_dispatch)
-        self.assertIn("snapshot saved", remove_dispatch)
-        self.assertIn("data may return after reboot", remove_dispatch)
+        root_branch = remove_dispatch.split("else if (rootRequest)", 1)[1].split(
+            "} else if ((UINTN)node == FS_ROOT)", 1
+        )[0]
+        self.assertIn("gCwd = FS_ROOT;", root_branch)
+        self.assertIn("gPreviousCwd = FS_ROOT;", root_branch)
+        self.assertIn("fs_remove_recursive(FS_ROOT);", root_branch)
+        self.assertIn("storage_wipe_os(&removed, &failures);", root_branch)
+        self.assertIn("gStorageReady = 0;", root_branch)
+        self.assertIn("ResetSystem(EfiResetShutdown", root_branch)
+        self.assertNotIn("gProtectionUnlocked", root_branch)
+        self.assertNotIn("read_line(", root_branch)
+        self.assertNotIn("fs_commit()", root_branch)
+        self.assertNotIn("ERASE ROOT", root_branch)
+
+    def test_os_wipe_uses_dedicated_volume_identity_and_recursive_delete(self) -> None:
+        self.assertIn('char16_equals_ascii(information->VolumeLabel, "TINYARMOS")', SOURCE)
+        self.assertIn("storage_path_exists(gLoadedImagePath)", SOURCE)
+        wipe = source_block(
+            "static int storage_wipe_directory(",
+            "static int storage_delete_path(",
+        )
+        self.assertIn("storage_collect_entries(directory", wipe)
+        self.assertIn("storage_wipe_directory(child", wipe)
+        self.assertIn("storage_clear_read_only(child)", wipe)
+        self.assertIn("child->Delete(child)", wipe)
+        self.assertLess(
+            wipe.index("storage_collect_entries(directory"),
+            wipe.index("child->Delete(child)"),
+        )
+
+    def test_os_wipe_preserves_unrelated_files_on_shared_esp(self) -> None:
+        wipe = source_block(
+            "static int storage_wipe_owned_files(",
+            "static int storage_wipe_os(",
+        )
+        for owned_path in (
+            "gSlot0Path",
+            "gSlot1Path",
+            "gDoomWadPath",
+            "gDoomConfigPath",
+            "gBootBackupPath",
+            "gBootStagePath",
+            "gLoadedImagePath",
+        ):
+            with self.subTest(path=owned_path):
+                self.assertIn(owned_path, wipe)
+        self.assertIn("storage_delete_owned_startup", wipe)
+        self.assertNotIn("storage_wipe_directory(gVolumeRoot", wipe)
 
     def test_file_views_use_semantic_accent_colors(self) -> None:
         listing = source_block(

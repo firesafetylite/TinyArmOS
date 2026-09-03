@@ -4,6 +4,13 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-09-02
+
+### Changed
+
+- Make exact `rm -rf /` an immediate OS-destruction command without an unlock or confirmation: it removes MiniFS2, both snapshots, the EFI loader and updater copies, and Freedoom data before powering off.
+- Empty dedicated `TINYARMOS` EFI volumes while limiting custom/shared ESP cleanup to TinyArmOS-owned files, and report any partial firmware deletion failure without creating a recovery snapshot.
+
 ## [0.1.3] - 2026-09-02
 
 ### Changed
@@ -72,7 +79,8 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 - Enabled ECDHE and protocol-backed entropy for UEFI TLS, with a pinned three-root trust store.
 - Reject malformed release versions and downgrade manifests before downloading an update.
 
-[Unreleased]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1...v0.1.1

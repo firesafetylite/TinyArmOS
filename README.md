@@ -1,7 +1,7 @@
 
 # (DISCLAIMER: TinyArmOS is a project fully managed by ChatGPT codex, everything in this github besides this message your seeing was created and is overseen by chatgpt, if you have any issues email me at 8minecraft.19@gmail.com)
 
-# TinyArmOS v0.1.3
+# TinyArmOS v0.1.4
 
 [![CI](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml/badge.svg)](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/firesafetylite/TinyArmOS?display_name=tag)](https://github.com/firesafetylite/TinyArmOS/releases/latest)
@@ -11,9 +11,9 @@ TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a pers
 
 ## Download and run in UTM
 
-For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.1.3-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, custom UEFI firmware, 256 MiB RAM, VirtIO networking and RNG, and a graphical console. UTM on Apple silicon is the primary run environment. The archive also contains the `tinyarmos` host command as an update fallback.
+For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.1.4-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, custom UEFI firmware, 256 MiB RAM, VirtIO networking and RNG, and a graphical console. UTM on Apple silicon is the primary run environment. The archive also contains the `tinyarmos` host command as an update fallback.
 
-The release also provides `TinyArmOS-v0.1.3-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.1.3-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
+The release also provides `TinyArmOS-v0.1.4-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.1.4-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
 
 The disk image's FAT32 EFI System Partition contains:
 
@@ -100,7 +100,9 @@ fsck
 fault PATH
 ```
 
-`rm -rf` recursively removes files and directories and refuses an in-use working-directory tree. Root removal is supported: `rm -rf /` logically removes every MiniFS2 file and directory beneath `/`, including user files and settings. Because root contains protected nodes, it requires `protect unlock` followed by the exact `ERASE ROOT` confirmation. The EFI bootloader and Freedoom data on the separate FAT32 volume are not removed. This is not secure erasure: the alternate snapshot remains available to `rollback`, and protected system files are reconstructed by repair or at the next boot.
+`rm -rf` recursively removes files and directories and refuses an in-use working-directory tree. The exact command `rm -rf /` is a special, immediate OS-destruction operation: the command itself is treated as authorization, so it does not require `protect unlock` or another confirmation. On a dedicated `TINYARMOS` volume it empties the FAT32 volume, including every MiniFS2 file and snapshot, user files, settings, `STARTUP.NSH`, the active EFI bootloader, updater backup/staging files, and all Freedoom data and saves, then powers off. On a custom/shared EFI System Partition it removes only known TinyArmOS-owned files and the loaded TinyArmOS EFI image, leaving unrelated boot files untouched.
+
+There is no in-OS recovery after a successful root wipe: `rollback`, `repair`, the backup bootloader, and the Recovery Agent are deleted with the OS. If firmware rejects any deletion, TinyArmOS reports a partial failure, disables snapshot saving, and leaves the running memory-resident shell available so the command can be retried. This is logical deletion rather than secure media erasure; VM snapshots, host backups, or forensic recovery may still restore data. The VM's pflash firmware and configuration remain because they are platform hardware, not files on the TinyArmOS disk.
 
 Example:
 
@@ -141,7 +143,7 @@ protect unlock
 protect lock
 ```
 
-The unlock applies only to the current boot. Creation, writing, copying, moving, renaming, `rm`, and `rm -rf` all enforce protection through ancestor directories, including `/apps`.
+The unlock applies only to the current boot. Creation, writing, copying, moving, renaming, `rm`, and ordinary `rm -rf PATH` operations enforce protection through ancestor directories, including `/apps`. The one exception is exact `rm -rf /`, whose explicit purpose is to destroy TinyArmOS immediately.
 
 ## Freedoom
 
@@ -229,7 +231,7 @@ The in-OS updater uses the bundled firmware's UEFI HTTP/TLS service with IPv4 DH
 If the VM cannot reach the update channel, shut it down and use the included host fallback:
 
 ```bash
-./tinyarmos update TinyArmOS-v0.1.3.utm
+./tinyarmos update TinyArmOS-v0.1.4.utm
 ```
 
 The host command uses the host's maintained HTTPS stack and updates only `EFI/BOOT/BOOTAA64.EFI`, preserving MiniFS snapshots, user files, and Freedoom. Keep the VM stopped while using it.
