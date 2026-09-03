@@ -52,6 +52,8 @@ jobs:
           strings build/BOOTAA64.EFI | grep -Fq 'Checking GitHub Releases over firmware HTTPS'
           strings build/BOOTAA64.EFI | grep -Fq 'UTM Shared Network fallback configured; continuing automatically.'
           strings build/BOOTAA64.EFI | grep -Fq 'Network fallback is still initializing; retrying automatically...'
+          strings build/BOOTAA64.EFI | grep -Fq '=== TinyArmOS Settings ==='
+          strings build/BOOTAA64.EFI | grep -Fq 'settings             configure persistent shell preferences'
           python - <<'PY'
           import plistlib
           from pathlib import Path

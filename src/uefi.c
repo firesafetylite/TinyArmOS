@@ -275,6 +275,8 @@ typedef struct {
 #define FS_PROTECTED   1
 #define FS_IMAGE_MAGIC 0x3253464d52415954ULL
 #define FS_IMAGE_VERSION 3
+#define SETTINGS_DEFAULT_TEXT_COLOR 7U
+#define SETTINGS_DEFAULT_ACCENT_COLOR 11U
 
 static EFI_SYSTEM_TABLE *gST;
 static EFI_FILE_PROTOCOL *gVolumeRoot;
@@ -296,6 +298,16 @@ static UINTN gConsoleColumns;
 static UINTN gConsoleRows;
 static UINT8 gScrollbackWrapped[SCROLLBACK_LINES];
 static UINT8 gScrollbackEnabled;
+
+typedef struct {
+    UINT8 textColor;
+    UINT8 accentColor;
+    UINT8 showPromptPath;
+    UINT8 startupHome;
+    UINT8 scrollback;
+} SHELL_SETTINGS;
+
+static SHELL_SETTINGS gSettings;
 
 typedef struct {
     UINT8 used;
@@ -882,7 +894,7 @@ static void fs_restore_system(void) {
         fs_ensure_file((UINTN)config, "boot.cfg",
             "recovery=auto\nrecovery_window=2s\nsnapshots=2\nwatchdog=disabled", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "shell.cfg",
-            "home=/home\napps=/apps\ntemporary=/tmp\nprompt=tinyarm\nnavigation=go,open,up,back,home,root", FS_PROTECTED);
+            "home=/home\napps=/apps\ntemporary=/tmp\nprompt=tinyarm\nsettings=/home/.tinyarmrc\nnavigation=go,open,up,back,home,root,cd", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "protection.cfg",
             "protected=/system,/apps,/recovery,/lost+found\ndefault=locked\nunlock=protect unlock\nscope=current-boot", FS_PROTECTED);
     }
@@ -909,7 +921,7 @@ static void fs_restore_system(void) {
         shellApp = fs_ensure_dir((UINTN)apps, "shell", FS_PROTECTED);
         recoveryApp = fs_ensure_dir((UINTN)apps, "recovery", FS_PROTECTED);
         fs_ensure_file((UINTN)apps, "registry.txt",
-            "doom      command: doom or run doom\nshell     built-in interactive shell\nrecovery  command: recovery", FS_PROTECTED);
+            "doom      command: doom\nshell     built-in interactive shell\nrecovery  command: recovery", FS_PROTECTED);
     }
     if (doomApp >= 0) {
         fs_ensure_file((UINTN)doomApp, "app.info",
@@ -922,15 +934,20 @@ static void fs_restore_system(void) {
             "PureDOOM engine=GPL-2.0\nFreedoom assets=BSD-3-Clause\nSee source distribution licenses.", FS_PROTECTED);
     }
     if (shellApp >= 0) fs_ensure_file((UINTN)shellApp, "app.info",
-        "name=TinyArmOS Shell\nkind=built-in\nfilesystem=MiniFS2\ncommands=help", FS_PROTECTED);
+        "name=TinyArmOS Shell\nkind=built-in\nfilesystem=MiniFS2\ncommands=help,settings", FS_PROTECTED);
     if (recoveryApp >= 0) fs_ensure_file((UINTN)recoveryApp, "app.info",
         "name=Recovery Agent\nkind=built-in\ncommand=recovery\nboot hotkey=R", FS_PROTECTED);
     if (home >= 0) {
+        int homeReadme;
+        const char *oldReadme =
+            "Easy navigation: home, root, up, back, go system, go apps, dir, open PATH. Try: sysfiles or apps";
+        const char *newReadme =
+            "Navigation: home, root, up, back, go system, go apps, ls, open PATH. Try: sysfiles or apps";
         fs_ensure_dir((UINTN)home, "notes", 0);
-        if (fs_find_child((UINTN)home, "readme.txt") < 0) {
-            fs_ensure_file((UINTN)home, "readme.txt",
-                "Easy navigation: home, root, up, back, go system, go apps, dir, open PATH. Try: sysfiles or apps", 0);
-        }
+        homeReadme = fs_find_child((UINTN)home, "readme.txt");
+        if (homeReadme < 0) fs_ensure_file((UINTN)home, "readme.txt", newReadme, 0);
+        else if (gNodes[homeReadme].type == FS_FILE && streq(gNodes[homeReadme].data, oldReadme))
+            fs_set_file((UINTN)homeReadme, newReadme);
     }
     if (recovery >= 0) {
         fs_ensure_file((UINTN)recovery, "help.txt",
@@ -1300,6 +1317,217 @@ static void read_line(char *line, UINTN capacity) {
     }
 }
 
+static const char *settings_color_name(UINT8 color) {
+    switch (color) {
+        case 1: return "blue";
+        case 2: return "green";
+        case 3: return "cyan";
+        case 4: return "red";
+        case 5: return "magenta";
+        case 6: return "brown";
+        case 7: return "light gray";
+        case 8: return "dark gray";
+        case 9: return "light blue";
+        case 10: return "light green";
+        case 11: return "light cyan";
+        case 12: return "light red";
+        case 13: return "light magenta";
+        case 14: return "yellow";
+        case 15: return "white";
+        default: return "light gray";
+    }
+}
+
+static int settings_parse_uint8(const char *text, UINT8 *value) {
+    UINTN parsed = 0;
+    if (!text || !*text) return 0;
+    while (*text) {
+        if (*text < '0' || *text > '9') return 0;
+        parsed = parsed * 10U + (UINTN)(*text - '0');
+        if (parsed > 255U) return 0;
+        text++;
+    }
+    *value = (UINT8)parsed;
+    return 1;
+}
+
+static void settings_defaults(void) {
+    gSettings.textColor = SETTINGS_DEFAULT_TEXT_COLOR;
+    gSettings.accentColor = SETTINGS_DEFAULT_ACCENT_COLOR;
+    gSettings.showPromptPath = 1;
+    gSettings.startupHome = 0;
+    gSettings.scrollback = 1;
+}
+
+static void settings_use_default_color(void) {
+    gST->ConOut->SetAttribute(gST->ConOut, (UINTN)gSettings.textColor);
+}
+
+static void settings_use_accent_color(void) {
+    gST->ConOut->SetAttribute(gST->ConOut, (UINTN)gSettings.accentColor);
+}
+
+static void settings_parse_config_line(char *line) {
+    char *value = line;
+    UINT8 parsed;
+    while (*value && *value != '=') value++;
+    if (*value != '=') return;
+    *value++ = 0;
+    if (!settings_parse_uint8(value, &parsed)) return;
+    if (streq(line, "text_color")) {
+        if (parsed >= 1U && parsed <= 15U) gSettings.textColor = parsed;
+    } else if (streq(line, "accent_color")) {
+        if (parsed >= 1U && parsed <= 15U) gSettings.accentColor = parsed;
+    } else if (streq(line, "prompt_path")) {
+        if (parsed <= 1U) gSettings.showPromptPath = parsed;
+    } else if (streq(line, "startup_home")) {
+        if (parsed <= 1U) gSettings.startupHome = parsed;
+    } else if (streq(line, "scrollback")) {
+        if (parsed <= 1U) gSettings.scrollback = parsed;
+    }
+}
+
+static void settings_load(void) {
+    int node;
+    UINTN position = 0;
+    settings_defaults();
+    node = fs_resolve("/home/.tinyarmrc");
+    if (node < 0 || gNodes[node].type != FS_FILE) return;
+    while (position < gNodes[node].size) {
+        char line[64];
+        UINTN used = 0;
+        int overflow = 0;
+        while (position < gNodes[node].size &&
+               gNodes[node].data[position] != '\n' && gNodes[node].data[position] != '\r') {
+            char ch = gNodes[node].data[position++];
+            if (!ch) {
+                position = gNodes[node].size;
+                break;
+            }
+            if (used + 1U < sizeof(line)) line[used++] = ch;
+            else overflow = 1;
+        }
+        while (position < gNodes[node].size &&
+               (gNodes[node].data[position] == '\n' || gNodes[node].data[position] == '\r')) position++;
+        line[used] = 0;
+        if (!overflow && used) settings_parse_config_line(line);
+    }
+}
+
+static void settings_append_uint8(char *buffer, UINT8 value, UINTN capacity) {
+    char number[4];
+    UINTN used = 0;
+    if (value >= 100U) number[used++] = (char)('0' + value / 100U);
+    if (value >= 10U) number[used++] = (char)('0' + (value / 10U) % 10U);
+    number[used++] = (char)('0' + value % 10U);
+    number[used] = 0;
+    string_append(buffer, number, capacity);
+}
+
+static int settings_save(void) {
+    char data[192];
+    int node = fs_resolve("/home/.tinyarmrc");
+    if (node < 0) {
+        int home = fs_resolve("/home");
+        if (home < 0) return 0;
+        node = fs_alloc(FS_FILE, (UINTN)home, ".tinyarmrc", 0);
+    }
+    if (node < 0 || gNodes[node].type != FS_FILE) return 0;
+    data[0] = 0;
+    string_append(data, "text_color=", sizeof(data));
+    settings_append_uint8(data, gSettings.textColor, sizeof(data));
+    string_append(data, "\naccent_color=", sizeof(data));
+    settings_append_uint8(data, gSettings.accentColor, sizeof(data));
+    string_append(data, "\nprompt_path=", sizeof(data));
+    settings_append_uint8(data, gSettings.showPromptPath, sizeof(data));
+    string_append(data, "\nstartup_home=", sizeof(data));
+    settings_append_uint8(data, gSettings.startupHome, sizeof(data));
+    string_append(data, "\nscrollback=", sizeof(data));
+    settings_append_uint8(data, gSettings.scrollback, sizeof(data));
+    string_append(data, "\n", sizeof(data));
+    fs_set_file((UINTN)node, data);
+    return gStorageReady && storage_sync();
+}
+
+static void settings_apply_runtime(void) {
+    settings_use_default_color();
+    if (gSettings.scrollback) {
+        if (!gScrollbackEnabled) scrollback_enable();
+    } else {
+        gScrollbackEnabled = 0;
+    }
+}
+
+static void settings_print_toggle(UINT8 enabled) {
+    print(enabled ? "on" : "off");
+}
+
+static void settings_show(void) {
+    settings_use_accent_color();
+    print("\n=== TinyArmOS Settings ===\n");
+    settings_use_default_color();
+    print("  1  Default text color : "); print(settings_color_name(gSettings.textColor)); print("\n");
+    print("  2  Accent/prompt color: "); print(settings_color_name(gSettings.accentColor)); print("\n");
+    print("  3  Show path in prompt: "); settings_print_toggle(gSettings.showPromptPath); print("\n");
+    print("  4  Startup directory  : "); print(gSettings.startupHome ? "/home" : "/"); print("\n");
+    print("  5  Scrollback         : "); settings_print_toggle(gSettings.scrollback); print("\n");
+    print("  6  Restore defaults\n");
+    print("  0  Save and exit\n");
+}
+
+static void settings_show_colors(void) {
+    UINT8 color;
+    print("Choose a foreground color (black is excluded):\n");
+    for (color = 1; color <= 15U; color++) {
+        gST->ConOut->SetAttribute(gST->ConOut, (UINTN)color);
+        print("  "); print_u64(color); print("  "); print(settings_color_name(color)); print("\n");
+    }
+    settings_use_default_color();
+}
+
+static void settings_choose_color(UINT8 *target) {
+    char answer[32];
+    UINT8 color;
+    settings_show_colors();
+    print("Color number: ");
+    read_line(answer, sizeof(answer));
+    if (!settings_parse_uint8(answer, &color) || color < 1U || color > 15U) {
+        print("Invalid color; choose a number from 1 through 15.\n");
+        return;
+    }
+    *target = color;
+    if (target == &gSettings.textColor) settings_use_default_color();
+    else settings_use_accent_color();
+    print("Color preview: "); print(settings_color_name(color)); print("\n");
+    settings_use_default_color();
+}
+
+static void command_settings(void) {
+    char choice[32];
+    for (;;) {
+        settings_show();
+        print("Select: ");
+        read_line(choice, sizeof(choice));
+        if (streq(choice, "0")) {
+            int persisted = settings_save();
+            settings_apply_runtime();
+            print(persisted ? "Settings saved to /home/.tinyarmrc.\n" :
+                  "Settings applied for this boot; persistent save failed.\n");
+            return;
+        }
+        if (streq(choice, "1")) settings_choose_color(&gSettings.textColor);
+        else if (streq(choice, "2")) settings_choose_color(&gSettings.accentColor);
+        else if (streq(choice, "3")) gSettings.showPromptPath = (UINT8)!gSettings.showPromptPath;
+        else if (streq(choice, "4")) gSettings.startupHome = (UINT8)!gSettings.startupHome;
+        else if (streq(choice, "5")) gSettings.scrollback = (UINT8)!gSettings.scrollback;
+        else if (streq(choice, "6")) {
+            settings_defaults();
+            settings_use_default_color();
+            print("Defaults restored. Choose 0 to save them.\n");
+        } else print("Unknown selection. Choose 0 through 6.\n");
+    }
+}
+
 #include "update.inc"
 #include "doom_port.inc"
 
@@ -1344,6 +1572,8 @@ static int boot_screen(EFI_HANDLE imageHandle) {
     if (errors) {
         fs_check(1, 0);
         fs_commit();
+    } else {
+        fs_restore_system();
     }
     boot_stage(5, "interactive shell", 1);
     print("\n  Press R for Recovery Agent (2 seconds) ");
@@ -1363,32 +1593,38 @@ static int boot_screen(EFI_HANDLE imageHandle) {
 static void recovery_help(void) {
     print(
         "Recovery commands:\n"
-        "  scan       verify nodes and checksums\n"
-        "  repair     repair metadata and restore system files\n"
-        "  rollback   load the previous valid disk snapshot\n"
-        "  restore    restore protected system files\n"
-        "  unlock / lock protected-node writes\n"
-        "  pwd / ls [PATH] / cd PATH\n"
-        "  cat PATH / view PATH / stat PATH\n"
-        "  tree [PATH] inspect the filesystem\n"
-        "  reset      format MiniFS2 after confirmation\n"
-        "  continue   return to the normal shell\n"
-        "  reboot / shutdown\n"
+        "  help             show every Recovery Agent command\n"
+        "  scan             verify nodes, checksums, and snapshots\n"
+        "  repair           repair metadata and restore system files\n"
+        "  rollback         load the previous valid disk snapshot\n"
+        "  restore          restore protected system files\n"
+        "  unlock           allow protected-node writes this boot\n"
+        "  lock             block protected-node writes\n"
+        "  pwd              print the current directory\n"
+        "  ls [PATH]        list a directory or file\n"
+        "  cd [PATH|-]      change directory; no path opens /home\n"
+        "  cat PATH         print a file\n"
+        "  stat PATH        show file or directory metadata\n"
+        "  tree [PATH]      show a directory tree\n"
+        "  reset            erase MiniFS2 after confirmation\n"
+        "  continue         return to the normal shell\n"
+        "  reboot           restart TinyArmOS\n"
+        "  shutdown         power off the machine\n"
     );
 }
 
 static void recovery_agent(void) {
     char line[128];
     gST->ConOut->ClearScreen(gST->ConOut);
-    gST->ConOut->SetAttribute(gST->ConOut, 0x0e);
+    settings_use_accent_color();
     print("=== TinyArmOS Recovery Agent ===\n");
-    gST->ConOut->SetAttribute(gST->ConOut, 0x07);
+    settings_use_default_color();
     print("Two checksummed snapshots protect the persistent filesystem.\n");
     recovery_help();
     for (;;) {
         print("recovery> ");
         read_line(line, sizeof(line));
-        if (streq(line, "help") || streq(line, "?")) {
+        if (streq(line, "help")) {
             recovery_help();
         } else if (streq(line, "scan")) {
             fs_check(0, 1);
@@ -1440,10 +1676,10 @@ static void recovery_agent(void) {
             if (node < 0) print("cd: path not found\n");
             else if (gNodes[node].type != FS_DIRECTORY) print("cd: not a directory\n");
             else { UINTN old = gCwd; gCwd = (UINTN)node; gPreviousCwd = old; }
-        } else if (starts_with(line, "cat ") || starts_with(line, "view ")) {
-            int node = fs_resolve(skip_spaces(line + 4 + (line[0] == 'v')));
-            if (node < 0) print("view: file not found\n");
-            else if (gNodes[node].type != FS_FILE) print("view: not a file\n");
+        } else if (starts_with(line, "cat ")) {
+            int node = fs_resolve(skip_spaces(line + 4));
+            if (node < 0) print("cat: file not found\n");
+            else if (gNodes[node].type != FS_FILE) print("cat: not a file\n");
             else { print(gNodes[node].data); print("\n"); }
         } else if (starts_with(line, "stat ")) {
             int node = fs_resolve(skip_spaces(line + 5));
@@ -1470,7 +1706,7 @@ static void recovery_agent(void) {
                 fs_commit();
                 print("MiniFS2 reset complete\n");
             } else print("reset cancelled\n");
-        } else if (streq(line, "continue") || streq(line, "exit")) {
+        } else if (streq(line, "continue")) {
             return;
         } else if (streq(line, "reboot")) {
             gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, (void *)0);
@@ -1486,37 +1722,54 @@ static void recovery_agent(void) {
 
 static void command_help(void) {
     print(
-        "Shell:\n"
-        "  help, clear, echo TEXT, info, uptime, count\n"
-        "  Up/Down scroll lines; PageUp/PageDown pages; End/Esc returns live\n"
-        "Easy navigation:\n"
-        "  home / root / up / back       jump between common places\n"
-        "  go PLACE|PATH                  go home, system, apps, recovery, tmp\n"
-        "  dir/list [PATH]                simple file listing\n"
-        "  open PATH                      open a file or enter a directory\n"
-        "  apps / run doom                browse or launch applications\n"
-        "Filesystem (absolute or relative paths):\n"
-        "  pwd                 current directory\n"
-        "  ls [PATH]           list files\n"
-        "  tree [PATH]         show directory tree\n"
-        "  sysfiles            show critical /system files\n"
-        "  cd [PATH|-]         change directory (no path = /home)\n"
-        "  cat/view PATH       print a file\n"
-        "  write PATH TEXT     create/replace a file\n"
-        "  append PATH TEXT    append text\n"
-        "  touch PATH          create an empty file\n"
-        "  mkdir PATH          create a directory\n"
-        "  rm PATH             remove a file\n"
-        "  rm -rf PATH         recursively remove a tree\n"
-        "  rmdir PATH          remove an empty directory\n"
-        "  cp SOURCE DEST      copy a file\n"
-        "  mv SOURCE DEST      move or rename a node\n"
-        "  stat PATH, df, sync, fsck\n"
-        "Games:\n"
-        "  doom                 launch Freedoom (Q returns to shell)\n"
-        "System:\n"
-        "  update [check]       securely update from GitHub Releases\n"
-        "  protect [status|unlock|lock], recovery, reboot, shutdown\n"
+        "Shell commands:\n"
+        "  help                 show this complete command reference\n"
+        "  clear                clear the screen\n"
+        "  scroll               show scrollback status and keyboard controls\n"
+        "  scroll clear         erase retained scrollback\n"
+        "  echo [TEXT]          print text or a blank line\n"
+        "  info                 show OS, firmware, storage, and runtime details\n"
+        "  uptime               show seconds since boot\n"
+        "  count                show commands entered this boot\n"
+        "Navigation and discovery:\n"
+        "  pwd                  print the current directory\n"
+        "  ls [PATH]            list a directory or file\n"
+        "  tree [PATH]          show a directory tree\n"
+        "  sysfiles             show critical /system and /apps files\n"
+        "  apps                 list installed applications\n"
+        "  home                 change to /home\n"
+        "  root                 change to /\n"
+        "  up                   change to the parent directory\n"
+        "  back                 return to the previous directory\n"
+        "  go [PLACE|PATH]      open home, root, system, apps, recovery, or tmp\n"
+        "  cd [PATH|-]          change directory; no path opens /home\n"
+        "  open [PATH]          list a directory or print a file\n"
+        "Filesystem commands:\n"
+        "  cat PATH             print a file\n"
+        "  write PATH TEXT      create or replace a file\n"
+        "  append PATH TEXT     append text to a file\n"
+        "  touch PATH           create an empty file\n"
+        "  mkdir PATH           create a directory\n"
+        "  rm PATH              remove a file\n"
+        "  rm -rf PATH          recursively remove a directory tree\n"
+        "  rmdir PATH           remove an empty directory\n"
+        "  cp SOURCE DEST       copy a file\n"
+        "  mv SOURCE DEST       move or rename a node\n"
+        "  stat PATH            show file or directory metadata\n"
+        "  df                   show MiniFS node and byte usage\n"
+        "  sync                 save a persistent filesystem snapshot\n"
+        "  fsck                 verify filesystem structure and checksums\n"
+        "  fault PATH           diagnostic: corrupt a file checksum in RAM\n"
+        "Application and system commands:\n"
+        "  doom                 launch Freedoom; Q or F12 returns to the shell\n"
+        "  settings             configure persistent shell preferences\n"
+        "  protect [status|unlock|lock] manage protected-node writes\n"
+        "  update [check]       check for or install a verified GitHub release\n"
+        "  recovery             open the Recovery Agent and its own help\n"
+        "  reboot               save MiniFS and restart TinyArmOS\n"
+        "  shutdown             save MiniFS and power off the machine\n"
+        "Keyboard: Up/Down scroll lines; PageUp/PageDown scroll pages;\n"
+        "          Home shows oldest output; End/Esc returns to live output.\n"
     );
 }
 
@@ -1545,9 +1798,9 @@ static void run_command(char *line) {
     char *command = skip_spaces(line);
     gCommands++;
     if (!*command) return;
-    if (streq(command, "help") || streq(command, "?")) {
+    if (streq(command, "help")) {
         command_help();
-    } else if (streq(command, "clear") || streq(command, "cls")) {
+    } else if (streq(command, "clear")) {
         gST->ConOut->ClearScreen(gST->ConOut);
     } else if (streq(command, "scroll")) {
         print("Scrollback stores ");
@@ -1561,30 +1814,24 @@ static void run_command(char *line) {
         print("\n");
     } else if (streq(command, "echo")) {
         print("\n");
-    } else if (streq(command, "info") || streq(command, "version")) {
+    } else if (streq(command, "info")) {
         command_info();
     } else if (streq(command, "uptime")) {
         UINT64 elapsed = timer_count() - gStartTicks;
         print_u64(gTimerHz ? elapsed / gTimerHz : 0);
         print(" seconds\n");
-    } else if (streq(command, "history") || streq(command, "count")) {
+    } else if (streq(command, "count")) {
         print_u64(gCommands);
         print(" commands entered this boot\n");
-    } else if (streq(command, "pwd") || streq(command, "where")) {
+    } else if (streq(command, "pwd")) {
         char path[FS_PATH_BYTES];
         fs_path(gCwd, path, sizeof(path));
         print(path);
         print("\n");
-    } else if (streq(command, "ls") || starts_with(command, "ls ") ||
-               streq(command, "dir") || starts_with(command, "dir ") ||
-               streq(command, "list") || starts_with(command, "list ")) {
-        char *path = (char *)"";
-        int node;
-        if (starts_with(command, "ls ")) path = skip_spaces(command + 3);
-        else if (starts_with(command, "dir ")) path = skip_spaces(command + 4);
-        else if (starts_with(command, "list ")) path = skip_spaces(command + 5);
-        node = fs_resolve(path);
-        if (node < 0) print("list: path not found\n");
+    } else if (streq(command, "ls") || starts_with(command, "ls ")) {
+        char *path = streq(command, "ls") ? (char *)"" : skip_spaces(command + 3);
+        int node = fs_resolve(path);
+        if (node < 0) print("ls: path not found\n");
         else fs_list((UINTN)node);
     } else if (streq(command, "tree") || starts_with(command, "tree ")) {
         char *path = streq(command, "tree") ? (char *)"" : skip_spaces(command + 5);
@@ -1597,7 +1844,7 @@ static void run_command(char *line) {
             print("\n");
             if (gNodes[node].type == FS_DIRECTORY) fs_tree_node((UINTN)node, 1);
         }
-    } else if (streq(command, "sysfiles") || streq(command, "system")) {
+    } else if (streq(command, "sysfiles")) {
         int systemNode = fs_resolve("/system");
         int appsNode = fs_resolve("/apps");
         print("Critical OS files [");
@@ -1611,7 +1858,7 @@ static void run_command(char *line) {
         int node = fs_resolve("/apps");
         print("Installed applications:\n");
         if (node >= 0) fs_list((UINTN)node);
-        print("Use 'go apps', 'open APP', or 'run doom'.\n");
+        print("Use 'go apps' to browse metadata or 'doom' to launch Freedoom.\n");
     } else if (streq(command, "home") || streq(command, "root") || streq(command, "up") || streq(command, "back")) {
         fs_change_directory(fs_easy_path(command), streq(command, "back"), 0);
     } else if (streq(command, "go") || starts_with(command, "go ")) {
@@ -1629,8 +1876,8 @@ static void run_command(char *line) {
         else if (gNodes[node].type == FS_DIRECTORY && !*path) fs_list((UINTN)node);
         else if (gNodes[node].type == FS_DIRECTORY) fs_change_directory(fs_easy_path(path), 0, 1);
         else { print(gNodes[node].data); print("\n"); }
-    } else if (starts_with(command, "cat ") || starts_with(command, "view ")) {
-        int node = fs_resolve(skip_spaces(command + 4 + (command[0] == 'v')));
+    } else if (starts_with(command, "cat ")) {
+        int node = fs_resolve(skip_spaces(command + 4));
         if (node < 0) print("cat: file not found\n");
         else if (gNodes[node].type != FS_FILE) print("cat: not a file\n");
         else {
@@ -1732,10 +1979,9 @@ static void run_command(char *line) {
                 fs_commit();
             }
         }
-    } else if (starts_with(command, "mv ") || starts_with(command, "rename ")) {
-        int renameCommand = starts_with(command, "rename ");
+    } else if (starts_with(command, "mv ")) {
         char *destination;
-        char *source = next_argument(command + (renameCommand ? 7 : 3), &destination);
+        char *source = next_argument(command + 3, &destination);
         int sourceNode = source ? fs_resolve(source) : -1;
         UINTN parent = FS_ROOT;
         char name[FS_NAME_BYTES];
@@ -1793,13 +2039,14 @@ static void run_command(char *line) {
             gNodes[node].checksum ^= 0x13579bdfU;
             print("test fault injected; run fsck or recovery\n");
         }
-    } else if (streq(command, "doom") || streq(command, "freedoom") || streq(command, "run doom")) {
+    } else if (streq(command, "doom")) {
         print("Freedoom controls: WASD move, arrows turn, F fire, E use, Enter select, Esc menu.\n");
         print("Press Q (or F12) at any time to return to TinyArmOS. Starting...\n");
         delay_ms(500);
         doom_run();
-    } else if (starts_with(command, "run ")) {
-        print("run: application not found; use 'apps' to browse installed apps\n");
+        settings_use_default_color();
+    } else if (streq(command, "settings")) {
+        command_settings();
     } else if (streq(command, "protect") || streq(command, "protect status")) {
         print(gProtectionUnlocked ? "protected nodes are UNLOCKED until reboot\n" : "protected nodes are locked\n");
     } else if (streq(command, "protect unlock")) {
@@ -1815,13 +2062,16 @@ static void run_command(char *line) {
         command_update(streq(command, "update check"));
     } else if (streq(command, "recovery")) {
         recovery_agent();
+        settings_load();
+        settings_apply_runtime();
         gST->ConOut->ClearScreen(gST->ConOut);
+        settings_use_default_color();
         print("Returned from Recovery Agent.\n");
     } else if (streq(command, "reboot")) {
         fs_commit();
         gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, (void *)0);
         for (;;) __asm__ volatile("wfe");
-    } else if (streq(command, "shutdown") || streq(command, "poweroff")) {
+    } else if (streq(command, "shutdown")) {
         fs_commit();
         gST->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, (void *)0);
         for (;;) __asm__ volatile("wfe");
@@ -1837,6 +2087,7 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     char line[FS_PATH_BYTES];
     char path[FS_PATH_BYTES];
     int recoveryRequested;
+    int startupNode;
     gST = systemTable;
     if (gST->BootServices->SetWatchdogTimer) gST->BootServices->SetWatchdogTimer(0, 0, 0, (CHAR16 *)0);
     gTimerHz = timer_frequency();
@@ -1845,23 +2096,39 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     gGeneration = 0;
     gProtectionUnlocked = 0;
     gScrollbackEnabled = 0;
+    settings_defaults();
     gDoomStarted = 0;
     gCwd = FS_ROOT;
     gPreviousCwd = FS_ROOT;
     recoveryRequested = boot_screen(image);
-    if (recoveryRequested) recovery_agent();
+    settings_load();
+    settings_use_default_color();
+    if (recoveryRequested) {
+        recovery_agent();
+        settings_load();
+    }
+    startupNode = fs_resolve(gSettings.startupHome ? "/home" : "/");
+    if (startupNode >= 0 && gNodes[startupNode].type == FS_DIRECTORY) {
+        gCwd = (UINTN)startupNode;
+        gPreviousCwd = gCwd;
+    }
 
-    scrollback_enable();
+    settings_apply_runtime();
     gST->ConOut->ClearScreen(gST->ConOut);
-    gST->ConOut->SetAttribute(gST->ConOut, 0x0b);
+    settings_use_accent_color();
     print("TinyArmOS " TINYARMOS_VERSION);
-    gST->ConOut->SetAttribute(gST->ConOut, 0x07);
+    settings_use_default_color();
     print(" - ARM64 shell + MiniFS2\n");
     print("Recovery Agent: healthy. Type 'help'.\n\n");
     for (;;) {
         fs_path(gCwd, path, sizeof(path));
-        print("tinyarm:");
-        print(path);
+        settings_use_accent_color();
+        print("tinyarm");
+        settings_use_default_color();
+        if (gSettings.showPromptPath) {
+            print(":");
+            print(path);
+        }
         print("> ");
         read_line(line, sizeof(line));
         run_command(line);

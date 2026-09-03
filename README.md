@@ -7,7 +7,7 @@
 [![Release](https://img.shields.io/github/v/release/firesafetylite/TinyArmOS?display_name=tag)](https://github.com/firesafetylite/TinyArmOS/releases/latest)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 
-TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a persistent hierarchical MiniFS2 filesystem, verified startup, an integrated Recovery Agent, protected system nodes, in-OS GitHub updates, a host update fallback, and native Freedoom. It is built from scratch and is not based on Unix or Linux.
+TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a persistent hierarchical MiniFS2 filesystem, verified startup, an integrated Recovery Agent, protected system nodes, persistent shell settings, in-OS GitHub updates, a host update fallback, and native Freedoom. It is built from scratch and is not based on Unix or Linux.
 
 ## Download and run in UTM
 
@@ -46,7 +46,7 @@ repair     repair metadata and restore protected files
 rollback   load the previous valid snapshot
 restore    restore critical system files
 pwd/ls/cd  navigate files
-cat/view   inspect a file
+cat         inspect a file
 stat/tree  inspect metadata and directory trees
 unlock     confirm a boot-scoped protection unlock
 lock       lock protected nodes again
@@ -62,7 +62,7 @@ MiniFS2 provides:
 
 - Persistent storage across reboots
 - Absolute, relative, `~`, `cd`, and `cd -` navigation
-- Friendly `go`, `open`, `home`, `root`, `up`, `back`, `dir`, and `list` shortcuts
+- Friendly `go`, `open`, `home`, `root`, `up`, and `back` navigation
 - 256-line shell scrollback with arrow-key and PageUp/PageDown navigation
 - Nested directories and directory-aware `cp`/`mv`
 - 96 fixed nodes with up to 8191 data bytes per file
@@ -74,17 +74,16 @@ MiniFS2 provides:
 Filesystem commands:
 
 ```text
-pwd / where
-ls/dir/list [PATH]
+pwd
+ls [PATH]
 tree [PATH]
 sysfiles
 go [home|root|system|apps|recovery|tmp|PATH]
 home / root / up / back
-open PATH
+open [PATH]
 apps
 cd [PATH|-]
 cat PATH
-view PATH
 write PATH TEXT
 append PATH TEXT
 touch PATH
@@ -94,11 +93,11 @@ rm -rf PATH
 rmdir PATH
 cp SOURCE DEST
 mv SOURCE DEST
-rename SOURCE DEST
 stat PATH
 df
 sync
 fsck
+fault PATH
 ```
 
 `rm -rf` recursively removes files and directories, refuses `/`, refuses an in-use working-directory tree, and honors protected-node locking.
@@ -150,7 +149,6 @@ Run:
 
 ```text
 doom
-# or: run doom
 ```
 
 Controls:
@@ -168,6 +166,18 @@ Q or F12    return to TinyArmOS
 Freedoom runs natively through UEFI Graphics Output Protocol and Simple Text Input; no Linux layer is involved. Sound and music are disabled in this lightweight port. Doom can be launched once per boot.
 
 The engine is [PureDOOM](https://github.com/Daivuk/PureDOOM). The legally redistributable Freedoom 0.13.0 Phase 1 IWAD is kept under `assets/` with its license and full credits.
+
+## Settings
+
+Run `settings` to open the persistent settings menu. It configures:
+
+- Default shell text color
+- Accent and prompt color
+- Whether the current path appears in the prompt
+- Whether the shell starts in `/` or `/home`
+- Whether 256-line scrollback is enabled
+
+Choose **0** to save. Settings are validated and stored in `/home/.tinyarmrc`, so they survive reboots and OS updates. Black foreground text is excluded because the console background is black. Restore Defaults is available inside the menu.
 
 ## Shell scrollback
 
@@ -195,6 +205,7 @@ echo TEXT
 info
 uptime
 count
+settings
 protect [status|unlock|lock]
 update [check]
 recovery
