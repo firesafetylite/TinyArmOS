@@ -48,7 +48,7 @@ Verified startup checks:
 
 The same integrity scan available in the TinyArmOS Boot Manager runs automatically before the normal shell can boot. A detected file, directory, or checksum problem triggers repair and opens Boot Manager instead of silently continuing.
 
-Press **R** during the two-second boot prompt, or run `bootmgr`. Boot Manager supports scanning, repair, rollback, formatting, and read-only filesystem navigation. It always provides 256 lines of scrollback with Up/Down line scrolling, PageUp/PageDown paging, Home for the oldest output, and End or Esc to return live. The redundant `restore` action is folded into `repair`; protection controls remain only in the normal shell, where filesystem writes are available.
+Press **R** during the two-second boot prompt, or run `bootmgr`. Boot Manager supports scanning, repair, rollback, formatting, and read-only filesystem navigation. It always provides 256 lines of scrollback with Up/Down line scrolling, PageUp/PageDown paging, Home for the oldest output, and End or Esc to return live.
 
 ```text
 scan                           verify MiniFS2 and both snapshots
