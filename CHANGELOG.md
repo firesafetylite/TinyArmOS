@@ -4,6 +4,10 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+- `update` and `update check` now retry the UTM Shared Network fallback automatically in the same command after DHCP times out.
+
 ## [0.1] - 2026-09-02
 
 ### Added

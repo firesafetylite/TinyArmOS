@@ -7,6 +7,8 @@
 #define UPDATE_MAX_URL_BYTES 4096U
 #define UPDATE_HTTP_TIMEOUT_SECONDS 30U
 #define UPDATE_DHCP_TIMEOUT_SECONDS 10U
+#define UPDATE_NETWORK_ATTEMPTS 2U
+#define UPDATE_NETWORK_RETRY_DELAY_US 1000000U
 #define UPDATE_LOCATE_ALL_HANDLES 0U
 
 typedef struct EFI_SERVICE_BINDING_PROTOCOL EFI_SERVICE_BINDING_PROTOCOL;
@@ -610,6 +612,7 @@ static EFI_STATUS update_prepare_ipv4(void) {
     status = config->SetData(config, UPDATE_IP4_CONFIG2_DNS_SERVER, sizeof(dns), &dns);
     if (status != EFI_SUCCESS && status != EFI_ABORTED)
         return update_report_firmware_error("static DNS", status);
+    print("UTM Shared Network fallback configured; continuing automatically.\n");
     return EFI_SUCCESS;
 }
 
@@ -799,13 +802,29 @@ cleanup:
     return status;
 }
 
+static int update_network_retryable(EFI_STATUS status) {
+    return status == EFI_NO_MAPPING || status == EFI_NOT_READY ||
+           status == EFI_TIMEOUT || status == EFI_DEVICE_ERROR || status == EFI_ABORTED;
+}
+
 static EFI_STATUS update_http_fetch(const char *url, UINT8 *buffer, UINTN capacity, UINTN *received) {
     char location[UPDATE_MAX_URL_BYTES];
     EFI_HTTP_STATUS_CODE responseCode;
-    EFI_STATUS status = update_http_fetch_once(url, buffer, capacity, received,
-        &responseCode, location, sizeof(location));
-    if (status != EFI_SUCCESS) return status;
-    return responseCode == HTTP_STATUS_200_OK ? EFI_SUCCESS : EFI_SECURITY_VIOLATION;
+    EFI_STATUS status = EFI_NOT_READY;
+    UINTN attempt;
+    for (attempt = 0; attempt < UPDATE_NETWORK_ATTEMPTS; attempt++) {
+        status = update_http_fetch_once(url, buffer, capacity, received,
+            &responseCode, location, sizeof(location));
+        if (status == EFI_SUCCESS) {
+            return responseCode == HTTP_STATUS_200_OK ? EFI_SUCCESS : EFI_SECURITY_VIOLATION;
+        }
+        if (attempt + 1U >= UPDATE_NETWORK_ATTEMPTS || !update_network_retryable(status)) return status;
+        print("Network fallback is still initializing; retrying automatically...\n");
+        update_connect_controllers();
+        if (gST->BootServices->Stall)
+            gST->BootServices->Stall(UPDATE_NETWORK_RETRY_DELAY_US);
+    }
+    return status;
 }
 
 static int update_parse_manifest(char *text, UINTN bytes, UPDATE_MANIFEST *manifest) {

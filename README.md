@@ -208,7 +208,7 @@ update check   check the latest GitHub Release
 update         download, verify, and install it
 ```
 
-The in-OS updater uses the bundled firmware's UEFI HTTP/TLS service with IPv4 DHCP and a UTM Shared Network fallback. It reads the redirect-free GitHub Pages update channel, validates a strict manifest and SHA-256 checksum, confirms the download is an ARM64 EFI application, rejects rollback versions, and keeps `EFI/BOOT/BOOTAA64.BAK` as a recovery copy. Reboot after installation.
+The in-OS updater uses the bundled firmware's UEFI HTTP/TLS service with IPv4 DHCP and automatically continues through the UTM Shared Network fallback when DHCP times out. It reads the redirect-free GitHub Pages update channel, validates a strict manifest and SHA-256 checksum, confirms the download is an ARM64 EFI application, rejects rollback versions, and keeps `EFI/BOOT/BOOTAA64.BAK` as a recovery copy. Reboot after installation.
 
 If the VM cannot reach the update channel, shut it down and use the included host fallback:
 

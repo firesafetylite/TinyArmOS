@@ -50,6 +50,8 @@ jobs:
           file build/BOOTAA64.EFI | grep -Eq 'PE32\+ executable.*Aarch64'
           strings build/BOOTAA64.EFI | grep -Fq 'update [check]'
           strings build/BOOTAA64.EFI | grep -Fq 'Checking GitHub Releases over firmware HTTPS'
+          strings build/BOOTAA64.EFI | grep -Fq 'UTM Shared Network fallback configured; continuing automatically.'
+          strings build/BOOTAA64.EFI | grep -Fq 'Network fallback is still initializing; retrying automatically...'
           python - <<'PY'
           import plistlib
           from pathlib import Path
