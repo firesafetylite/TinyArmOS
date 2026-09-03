@@ -4,6 +4,12 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the dedicated Recovery Agent and its MiniFS trees with the TinyArmOS Boot Manager, available through the `bootmgr` command, the boot-time **R** hotkey, and automatic integrity-error routing.
+- Made 256-line scrollback and all line, page, oldest, and live-output navigation controls available inside Boot Manager regardless of the normal shell setting.
+- Migrated legacy `/recovery` and `/apps/recovery` trees to protected `/apps/bootmgr` metadata when restoring persisted MiniFS snapshots.
+
 ## [0.1.4] - 2026-09-02
 
 ### Changed

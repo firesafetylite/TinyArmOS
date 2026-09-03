@@ -7,7 +7,7 @@
 [![Release](https://img.shields.io/github/v/release/firesafetylite/TinyArmOS?display_name=tag)](https://github.com/firesafetylite/TinyArmOS/releases/latest)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 
-TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a persistent hierarchical MiniFS2 filesystem, verified startup, an integrated Recovery Agent, protected system nodes, persistent shell settings, in-OS GitHub updates, a host update fallback, and native Freedoom. It is built from scratch and is not based on Unix or Linux.
+TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a persistent hierarchical MiniFS2 filesystem, verified startup, an integrated TinyArmOS Boot Manager, protected system nodes, persistent shell settings, in-OS GitHub updates, a host update fallback, and native Freedoom. It is built from scratch and is not based on Unix or Linux.
 
 ## Download and run in UTM
 
@@ -28,7 +28,7 @@ If UEFI opens its own shell, enter:
 fs0:\EFI\BOOT\BOOTAA64.EFI
 ```
 
-## Boot and recovery
+## Boot Manager
 
 Verified startup checks:
 
@@ -38,9 +38,9 @@ Verified startup checks:
 4. The built-in `scan` check across filesystem structure and every active file checksum
 5. The interactive shell
 
-The same integrity scan available in the Recovery Agent now runs automatically before the normal shell can boot. A detected file, directory, or checksum problem triggers repair and opens Recovery instead of silently continuing.
+The same integrity scan available in the TinyArmOS Boot Manager runs automatically before the normal shell can boot. A detected file, directory, or checksum problem triggers repair and opens Boot Manager instead of silently continuing.
 
-Press **R** during the two-second boot prompt, or run `recovery`. The Recovery Agent supports scanning, repair, rollback, formatting, and read-only filesystem navigation. The redundant `restore` action is folded into `repair`; protection controls remain only in the normal shell, where filesystem writes are available.
+Press **R** during the two-second boot prompt, or run `bootmgr`. Boot Manager supports scanning, repair, rollback, formatting, and read-only filesystem navigation. It always provides 256 lines of scrollback with Up/Down line scrolling, PageUp/PageDown paging, Home for the oldest output, and End or Esc to return live. The redundant `restore` action is folded into `repair`; protection controls remain only in the normal shell, where filesystem writes are available.
 
 ```text
 scan                           verify MiniFS2 and both snapshots
@@ -50,6 +50,7 @@ pwd/ls/cd                      navigate files
 cat                             inspect a file
 stat/tree                      inspect metadata and directory trees
 reset                          format MiniFS2 after confirmation
+scroll / scroll clear          inspect or clear 256-line scrollback
 continue                       return to the shell
 reboot/shutdown                restart or power off
 ```
@@ -66,7 +67,7 @@ MiniFS2 provides:
 - 256-line shell scrollback with arrow-key and PageUp/PageDown navigation
 - Nested directories and directory-aware `cp`/`mv`
 - 96 fixed nodes with up to 8191 data bytes per file
-- Protected `/system`, `/apps`, `/recovery`, and `/lost+found` trees
+- Protected `/system`, `/apps`, and `/lost+found` trees
 - Per-node FNV-1a integrity checksums
 - Two alternating whole-filesystem snapshots
 - Automatic boot-time verification and repair
@@ -78,7 +79,7 @@ pwd
 ls [PATH]
 tree [PATH]
 sysfiles
-go [home|root|system|apps|recovery|tmp|PATH]
+go [home|root|system|apps|tmp|PATH]
 home / root / up / back
 open [PATH]
 apps
@@ -102,7 +103,7 @@ fault PATH
 
 `rm -rf` recursively removes files and directories and refuses an in-use working-directory tree. The exact command `rm -rf /` is a special, immediate OS-destruction operation: the command itself is treated as authorization, so it does not require `protect unlock` or another confirmation. On a dedicated `TINYARMOS` volume it empties the FAT32 volume, including every MiniFS2 file and snapshot, user files, settings, `STARTUP.NSH`, the active EFI bootloader, updater backup/staging files, and all Freedoom data and saves, then powers off. On a custom/shared EFI System Partition it removes only known TinyArmOS-owned files and the loaded TinyArmOS EFI image, leaving unrelated boot files untouched.
 
-There is no in-OS recovery after a successful root wipe: `rollback`, `repair`, the backup bootloader, and the Recovery Agent are deleted with the OS. If firmware rejects any deletion, TinyArmOS reports a partial failure, disables snapshot saving, and leaves the running memory-resident shell available so the command can be retried. This is logical deletion rather than secure media erasure; VM snapshots, host backups, or forensic recovery may still restore data. The VM's pflash firmware and configuration remain because they are platform hardware, not files on the TinyArmOS disk.
+There is no on-disk TinyArmOS or Boot Manager after a successful root wipe: snapshots, the backup bootloader, and Boot Manager metadata are deleted with the OS. If firmware rejects any deletion, TinyArmOS reports a partial failure, disables snapshot saving, and leaves the running memory-resident shell available so the command can be retried. This is logical deletion rather than secure media erasure; VM snapshots, host backups, or forensic recovery may still restore data. The VM's pflash firmware and configuration remain because they are platform hardware, not files on the TinyArmOS disk.
 
 Example:
 
@@ -119,7 +120,7 @@ sync
 Run `sysfiles` to inspect both protected trees, or use `go system` and `go apps` for simpler navigation:
 
 ```text
-/system/boot       loader and startup records
+/system/boot       loader, startup, and Boot Manager records
 /system/kernel     core, ABI, and memory records
 /system/firmware   UEFI interfaces and protocols
 /system/config     boot, shell, and protection policy
@@ -128,8 +129,7 @@ Run `sysfiles` to inspect both protected trees, or use `go system` and `go apps`
 /system/security   integrity policy and protected paths
 /apps/doom         Freedoom app, controls, data link, and license
 /apps/shell        native shell app metadata
-/apps/recovery     Recovery Agent app metadata
-/recovery          repair policy and snapshot information
+/apps/bootmgr      TinyArmOS Boot Manager app metadata
 ```
 
 Use `open /system/manifest.txt`, `open /apps/doom/app.info`, or `open /apps/doom/controls.txt`. These files are readable while locked.
@@ -212,7 +212,7 @@ count
 settings
 protect [status|unlock|lock]
 update [check]
-recovery
+bootmgr
 reboot
 shutdown
 ```

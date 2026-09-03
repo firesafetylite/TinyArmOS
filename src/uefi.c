@@ -1216,11 +1216,35 @@ static int fs_ensure_file(UINTN parent, const char *name, const char *data, UINT
     return node;
 }
 
-static void fs_restore_system(void) {
+static void fs_remove_recursive(UINTN node);
+static int fs_is_ancestor(UINTN ancestor, UINTN node);
+
+static int fs_remove_legacy_manager_trees(void) {
+    int legacyRoot = fs_find_child(FS_ROOT, "recovery");
+    int apps = fs_find_child(FS_ROOT, "apps");
+    int legacyApp = apps >= 0 && gNodes[apps].type == FS_DIRECTORY
+        ? fs_find_child((UINTN)apps, "recovery") : -1;
+    int changed = 0;
+    if (legacyRoot >= 0) {
+        if (fs_is_ancestor((UINTN)legacyRoot, gCwd)) gCwd = FS_ROOT;
+        if (fs_is_ancestor((UINTN)legacyRoot, gPreviousCwd)) gPreviousCwd = FS_ROOT;
+        fs_remove_recursive((UINTN)legacyRoot);
+        changed = 1;
+    }
+    if (legacyApp >= 0) {
+        if (fs_is_ancestor((UINTN)legacyApp, gCwd)) gCwd = FS_ROOT;
+        if (fs_is_ancestor((UINTN)legacyApp, gPreviousCwd)) gPreviousCwd = FS_ROOT;
+        fs_remove_recursive((UINTN)legacyApp);
+        changed = 1;
+    }
+    return changed;
+}
+
+static int fs_restore_system(void) {
+    int migrated = fs_remove_legacy_manager_trees();
     int system = fs_ensure_dir(FS_ROOT, "system", FS_PROTECTED);
     int apps = fs_ensure_dir(FS_ROOT, "apps", FS_PROTECTED);
     int home = fs_ensure_dir(FS_ROOT, "home", 0);
-    int recovery = fs_ensure_dir(FS_ROOT, "recovery", FS_PROTECTED);
     int boot = -1;
     int config = -1;
     int drivers = -1;
@@ -1230,7 +1254,7 @@ static void fs_restore_system(void) {
     int security = -1;
     int doomApp = -1;
     int shellApp = -1;
-    int recoveryApp = -1;
+    int bootManagerApp = -1;
     fs_ensure_dir(FS_ROOT, "tmp", 0);
     fs_ensure_dir(FS_ROOT, "lost+found", FS_PROTECTED);
     if (system >= 0) {
@@ -1244,7 +1268,7 @@ static void fs_restore_system(void) {
         fs_ensure_file((UINTN)system, "version.txt",
             "TinyArmOS " TINYARMOS_VERSION "\narchitecture=ARM64\nfirmware=UEFI\nkernel=freestanding\nfilesystem=MiniFS2\nunix=no", FS_PROTECTED);
         fs_ensure_file((UINTN)system, "manifest.txt",
-            "Critical tree:\n/system/boot       loader and startup records\n/system/kernel     core, ABI, and memory records\n/system/firmware   UEFI interface records\n/system/config     boot and shell policy\n/system/drivers    hardware service records\n/system/runtime    MiniFS2 runtime records\n/system/security   integrity and protected paths\n/apps              installed native applications\n/recovery          repair and snapshot records", FS_PROTECTED);
+            "Critical tree:\n/system/boot       loader, startup, and Boot Manager records\n/system/kernel     core, ABI, and memory records\n/system/firmware   UEFI interface records\n/system/config     boot and shell policy\n/system/drivers    hardware service records\n/system/runtime    MiniFS2 runtime records\n/system/security   integrity and protected paths\n/apps              installed native applications", FS_PROTECTED);
     }
     if (boot >= 0) {
         fs_ensure_file((UINTN)boot, "BOOTAA64.EFI.info",
@@ -1252,11 +1276,13 @@ static void fs_restore_system(void) {
         fs_ensure_file((UINTN)boot, "startup.nsh.info",
             "critical=yes\nfirmware fallback=FS0:\\EFI\\BOOT\\BOOTAA64.EFI", FS_PROTECTED);
         fs_ensure_file((UINTN)boot, "boot-chain.info",
-            "UEFI firmware -> BOOTAA64.EFI -> verified startup -> Recovery Agent -> shell", FS_PROTECTED);
+            "UEFI firmware -> BOOTAA64.EFI -> verified startup -> Boot Manager -> shell", FS_PROTECTED);
+        fs_ensure_file((UINTN)boot, "boot-manager.info",
+            "name=TinyArmOS Boot Manager\ncommand=bootmgr\nboot hotkey=R\nintegrity errors=open automatically\nscrollback=256 lines", FS_PROTECTED);
     }
     if (kernel >= 0) {
         fs_ensure_file((UINTN)kernel, "kernel.info",
-            "critical=yes\nmodel=single-address-space\narchitecture=AArch64\nentry=EfiMain\nservices=shell,MiniFS2,recovery,apps", FS_PROTECTED);
+            "critical=yes\nmodel=single-address-space\narchitecture=AArch64\nentry=EfiMain\nservices=shell,MiniFS2,boot-manager,apps", FS_PROTECTED);
         fs_ensure_file((UINTN)kernel, "abi.info",
             "freestanding C17\nunix_abi=no\nposix=no\nsyscalls=native TinyArmOS services", FS_PROTECTED);
         fs_ensure_file((UINTN)kernel, "memory.map",
@@ -1270,11 +1296,11 @@ static void fs_restore_system(void) {
     }
     if (config >= 0) {
         fs_ensure_file((UINTN)config, "boot.cfg",
-            "recovery=auto\nrecovery_window=2s\nsnapshots=2\nintegrity_scan=scan\nwatchdog=disabled", FS_PROTECTED);
+            "boot_manager=auto\nboot_manager_window=2s\nsnapshots=2\nintegrity_scan=scan\nwatchdog=disabled", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "shell.cfg",
             "home=/home\napps=/apps\ntemporary=/tmp\nprompt=tinyarm\nsettings=/home/.tinyarmrc\nnavigation=go,open,up,back,home,root,cd", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "protection.cfg",
-            "protected=/system,/apps,/recovery,/lost+found\ndefault=locked\nunlock=protect unlock\nscope=current-boot", FS_PROTECTED);
+            "protected=/system,/apps,/lost+found\ndefault=locked\nunlock=protect unlock\nscope=current-boot", FS_PROTECTED);
     }
     if (drivers >= 0) {
         fs_ensure_file((UINTN)drivers, "graphics.info", "UEFI Graphics Output Protocol\nconsumer=Freedoom\nmode=firmware-native", FS_PROTECTED);
@@ -1285,21 +1311,21 @@ static void fs_restore_system(void) {
     }
     if (runtime >= 0) {
         fs_ensure_file((UINTN)runtime, "minifs2.info", "hierarchical=yes\nchecksums=FNV-1a\nauto_repair=yes\nmax_nodes=96\nfile_limit=8191", FS_PROTECTED);
-        fs_ensure_file((UINTN)runtime, "mounts.info", "/            MiniFS2 read-write\n/system      protected\n/apps        protected\n/recovery    protected\nEFI FAT32    platform storage", FS_PROTECTED);
+        fs_ensure_file((UINTN)runtime, "mounts.info", "/            MiniFS2 read-write\n/system      protected\n/apps        protected\nEFI FAT32    platform storage", FS_PROTECTED);
         fs_ensure_file((UINTN)runtime, "snapshots.info", "copies=2\nstrategy=alternating\nselection=newest-valid\nfiles=TINYFS0.BIN,TINYFS1.BIN", FS_PROTECTED);
     }
     if (security >= 0) {
         fs_ensure_file((UINTN)security, "integrity.policy",
             "critical nodes use FNV-1a checksums\nupdates require HTTPS, SHA-256, and ARM64 PE validation\nverify at boot with scan\nauto-repair metadata\nrollback to newest valid snapshot", FS_PROTECTED);
         fs_ensure_file((UINTN)security, "protected.paths",
-            "/system\n/apps\n/recovery\n/lost+found\nUnlock requires exact UNLOCK confirmation and expires at reboot.", FS_PROTECTED);
+            "/system\n/apps\n/lost+found\nUnlock requires exact UNLOCK confirmation and expires at reboot.", FS_PROTECTED);
     }
     if (apps >= 0) {
         doomApp = fs_ensure_dir((UINTN)apps, "doom", FS_PROTECTED);
         shellApp = fs_ensure_dir((UINTN)apps, "shell", FS_PROTECTED);
-        recoveryApp = fs_ensure_dir((UINTN)apps, "recovery", FS_PROTECTED);
+        bootManagerApp = fs_ensure_dir((UINTN)apps, "bootmgr", FS_PROTECTED);
         fs_ensure_file((UINTN)apps, "registry.txt",
-            "doom      command: doom\nshell     built-in interactive shell\nrecovery  command: recovery", FS_PROTECTED);
+            "doom      command: doom\nshell     built-in interactive shell\nbootmgr   command: bootmgr", FS_PROTECTED);
     }
     if (doomApp >= 0) {
         fs_ensure_file((UINTN)doomApp, "app.info",
@@ -1313,8 +1339,8 @@ static void fs_restore_system(void) {
     }
     if (shellApp >= 0) fs_ensure_file((UINTN)shellApp, "app.info",
         "name=TinyArmOS Shell\nkind=built-in\nfilesystem=MiniFS2\ncommands=help,settings", FS_PROTECTED);
-    if (recoveryApp >= 0) fs_ensure_file((UINTN)recoveryApp, "app.info",
-        "name=Recovery Agent\nkind=built-in\ncommand=recovery\nboot hotkey=R", FS_PROTECTED);
+    if (bootManagerApp >= 0) fs_ensure_file((UINTN)bootManagerApp, "app.info",
+        "name=TinyArmOS Boot Manager\nkind=built-in\ncommand=bootmgr\nboot hotkey=R\nscrollback=256 lines", FS_PROTECTED);
     if (home >= 0) {
         int homeReadme;
         const char *oldReadme =
@@ -1327,14 +1353,7 @@ static void fs_restore_system(void) {
         else if (gNodes[homeReadme].type == FS_FILE && streq(gNodes[homeReadme].data, oldReadme))
             fs_set_file((UINTN)homeReadme, newReadme);
     }
-    if (recovery >= 0) {
-        fs_ensure_file((UINTN)recovery, "help.txt",
-            "Recovery Agent: scan, repair, rollback, pwd, ls, cd, cat, stat, tree, reset, continue", FS_PROTECTED);
-        fs_ensure_file((UINTN)recovery, "policy.txt",
-            "Run the same scan before every boot and on demand. Verify every node checksum and snapshot payload. Auto-repair damaged metadata. Preserve two alternating generations.", FS_PROTECTED);
-        fs_ensure_file((UINTN)recovery, "snapshots.info",
-            "primary=TINYFS0.BIN\nsecondary=TINYFS1.BIN\nselection=newest-valid\nrollback=previous-valid", FS_PROTECTED);
-    }
+    return migrated;
 }
 
 static void fs_format(void) {
@@ -1346,7 +1365,7 @@ static void fs_format(void) {
     gNodes[FS_ROOT].name[0] = 0;
     fs_update(FS_ROOT);
     gCwd = FS_ROOT;
-    fs_restore_system();
+    (void)fs_restore_system();
 }
 
 static int fs_resolve(const char *path) {
@@ -1555,7 +1574,6 @@ static const char *fs_easy_path(const char *name) {
     if (streq(name, "root")) return "/";
     if (streq(name, "system")) return "/system";
     if (streq(name, "apps")) return "/apps";
-    if (streq(name, "recovery")) return "/recovery";
     if (streq(name, "temp") || streq(name, "tmp")) return "/tmp";
     if (streq(name, "up")) return "..";
     return name;
@@ -1640,7 +1658,7 @@ static int fs_check(int repair, int verbose) {
         }
     }
     if (repair) {
-        fs_restore_system();
+        (void)fs_restore_system();
         if (gCwd >= FS_MAX_NODES || !gNodes[gCwd].used || gNodes[gCwd].type != FS_DIRECTORY) gCwd = FS_ROOT;
     }
     if (verbose) {
@@ -2030,7 +2048,7 @@ static void boot_stage(UINTN step, const char *label, int okay) {
     print_u64(step);
     print("/5] ");
     print(label);
-    print(okay ? " ... OK\n" : " ... RECOVERY NEEDED\n");
+    print(okay ? " ... OK\n" : " ... BOOT MANAGER REQUIRED\n");
     delay_ms(120);
 }
 
@@ -2066,28 +2084,28 @@ static int boot_screen(EFI_HANDLE imageHandle) {
     if (errors) {
         fs_check(1, 0);
         fs_commit();
-    } else {
-        fs_restore_system();
+    } else if (fs_restore_system()) {
+        fs_commit();
     }
     boot_stage(5, "interactive shell", 1);
-    print("\n  Press R for Recovery Agent (2 seconds) ");
+    print("\n  Press R for TinyArmOS Boot Manager (2 seconds) ");
     deadline = timer_count() + gTimerHz * 2;
     while (timer_count() < deadline) {
         if (poll_key(&key) && (key == 'r' || key == 'R')) {
-            print("RECOVERY\n");
+            print("BOOT MANAGER\n");
             return 1;
         }
         __asm__ volatile("yield");
     }
-    print("BOOT\n");
+    print(errors ? "BOOT MANAGER\n" : "BOOT\n");
     delay_ms(150);
     return errors != 0;
 }
 
-static void recovery_help(void) {
+static void boot_manager_help(void) {
     print(
-        "Recovery commands:\n"
-        "  help             show every Recovery Agent command\n"
+        "Boot Manager commands:\n"
+        "  help             show every Boot Manager command\n"
         "  scan             verify nodes, checksums, and snapshots\n"
         "  repair           repair metadata and restore system files\n"
         "  rollback         load the previous valid disk snapshot\n"
@@ -2098,25 +2116,29 @@ static void recovery_help(void) {
         "  stat PATH        show file or directory metadata\n"
         "  tree [PATH]      show a directory tree\n"
         "  reset            erase MiniFS2 after confirmation\n"
+        "  scroll           show scrollback status and keyboard controls\n"
+        "  scroll clear     erase retained scrollback\n"
         "  continue         return to the normal shell\n"
         "  reboot           restart TinyArmOS\n"
         "  shutdown         power off the machine\n"
     );
 }
 
-static void recovery_agent(void) {
+static void boot_manager_shell(void) {
     char line[128];
+    if (!gScrollbackEnabled) scrollback_enable();
     gST->ConOut->ClearScreen(gST->ConOut);
     settings_use_accent_color();
-    print("=== TinyArmOS Recovery Agent ===\n");
+    print("=== TinyArmOS Boot Manager ===\n");
     settings_use_default_color();
     print("Two checksummed snapshots protect the persistent filesystem.\n");
-    recovery_help();
+    print("Scrollback: 256 lines; Up/Down line, PageUp/PageDown page, Home oldest, End/Esc live.\n");
+    boot_manager_help();
     for (;;) {
-        print("recovery> ");
+        print("bootmgr> ");
         read_line(line, sizeof(line));
         if (streq(line, "help")) {
-            recovery_help();
+            boot_manager_help();
         } else if (streq(line, "scan")) {
             fs_scan_integrity(1);
         } else if (streq(line, "repair")) {
@@ -2177,6 +2199,13 @@ static void recovery_agent(void) {
                 fs_commit();
                 print("MiniFS2 reset complete\n");
             } else print("reset cancelled\n");
+        } else if (streq(line, "scroll")) {
+            print("Scrollback stores ");
+            print_u64(gScrollbackCount);
+            print("/256 lines. Use Up/Down for lines, PageUp/PageDown for pages; End or Esc returns live.\n");
+        } else if (streq(line, "scroll clear")) {
+            scrollback_reset();
+            print("scrollback cleared\n");
         } else if (streq(line, "continue")) {
             return;
         } else if (streq(line, "reboot")) {
@@ -2186,7 +2215,7 @@ static void recovery_agent(void) {
             gST->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, (void *)0);
             for (;;) __asm__ volatile("wfe");
         } else if (*line) {
-            print("Unknown recovery command. Type help.\n");
+            print("Unknown Boot Manager command. Type help.\n");
         }
     }
 }
@@ -2212,7 +2241,7 @@ static void command_help(void) {
         "  root                 change to /\n"
         "  up                   change to the parent directory\n"
         "  back                 return to the previous directory\n"
-        "  go [PLACE|PATH]      open home, root, system, apps, recovery, or tmp\n"
+        "  go [PLACE|PATH]      open home, root, system, apps, or tmp\n"
         "  cd [PATH|-]          change directory; no path opens /home\n"
         "  open [PATH]          list a directory or print a file\n"
         "Filesystem commands:\n"
@@ -2237,7 +2266,7 @@ static void command_help(void) {
         "  settings             open the full-screen persistent settings UI\n"
         "  protect [status|unlock|lock] manage protected-node writes\n"
         "  update [check]       check for or install a verified GitHub release\n"
-        "  recovery             open the Recovery Agent and its own help\n"
+        "  bootmgr              open the TinyArmOS Boot Manager and its help\n"
         "  reboot               save MiniFS and restart TinyArmOS\n"
         "  shutdown             save MiniFS and power off the machine\n"
         "Keyboard: Up/Down scroll lines; PageUp/PageDown scroll pages;\n"
@@ -2442,7 +2471,7 @@ static void run_command(char *line) {
             volume->Flush(volume);
             volume->Close(volume);
             print("TinyArmOS files, snapshots, bootloader, backup, and Freedoom data are gone.\n");
-            print("No in-OS recovery path remains. Powering off.\n");
+            print("No on-disk TinyArmOS or Boot Manager remains. Powering off.\n");
             delay_ms(2000);
             gST->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, (void *)0);
             for (;;) __asm__ volatile("wfe");
@@ -2544,7 +2573,7 @@ static void run_command(char *line) {
         if (node < 0 || gNodes[node].type != FS_FILE) print("fault: file not found\n");
         else {
             gNodes[node].checksum ^= 0x13579bdfU;
-            print("test fault injected; run fsck or recovery\n");
+            print("test fault injected; run fsck or bootmgr\n");
         }
     } else if (streq(command, "doom")) {
         print("Freedoom controls: WASD move, arrows turn, F fire, E use, Enter select, Esc menu.\n");
@@ -2558,13 +2587,13 @@ static void run_command(char *line) {
         command_protect(command);
     } else if (streq(command, "update") || streq(command, "update check")) {
         command_update(streq(command, "update check"));
-    } else if (streq(command, "recovery")) {
-        recovery_agent();
+    } else if (streq(command, "bootmgr")) {
+        boot_manager_shell();
         settings_load();
         settings_apply_runtime();
         gST->ConOut->ClearScreen(gST->ConOut);
         settings_use_default_color();
-        print("Returned from Recovery Agent.\n");
+        print("Returned from TinyArmOS Boot Manager.\n");
     } else if (streq(command, "reboot")) {
         fs_commit();
         gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, (void *)0);
@@ -2584,7 +2613,7 @@ __attribute__((used))
 EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     char line[FS_PATH_BYTES];
     char path[FS_PATH_BYTES];
-    int recoveryRequested;
+    int bootManagerRequested;
     int startupNode;
     gST = systemTable;
     if (gST->BootServices->SetWatchdogTimer) gST->BootServices->SetWatchdogTimer(0, 0, 0, (CHAR16 *)0);
@@ -2598,12 +2627,14 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     gDoomStarted = 0;
     gCwd = FS_ROOT;
     gPreviousCwd = FS_ROOT;
-    recoveryRequested = boot_screen(image);
+    bootManagerRequested = boot_screen(image);
     settings_load();
+    settings_apply_runtime();
     settings_use_default_color();
-    if (recoveryRequested) {
-        recovery_agent();
+    if (bootManagerRequested) {
+        boot_manager_shell();
         settings_load();
+        settings_apply_runtime();
     }
     startupNode = fs_resolve(gSettings.startupHome ? "/home" : "/");
     if (startupNode >= 0 && gNodes[startupNode].type == FS_DIRECTORY) {
@@ -2617,7 +2648,7 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     print("TinyArmOS " TINYARMOS_VERSION);
     settings_use_default_color();
     print(" - ARM64 shell + MiniFS2\n");
-    print("Recovery Agent: healthy. Type 'help'.\n\n");
+    print("Boot Manager: ready. Type 'help'.\n\n");
     for (;;) {
         fs_path(gCwd, path, sizeof(path));
         settings_use_accent_color();
