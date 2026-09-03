@@ -18,10 +18,26 @@ else
   exit 1
 fi
 
+BUILD_DEFINES=('-DTINYARMOS_BUILD_CHANNEL="main"')
+case "${TINYARMOS_BUILD_CHANNEL:-main}" in
+  main) ;;
+  nightly)
+    BUILD_DEFINES=(
+      '-DTINYARMOS_DISPLAY_VERSION="nightly"'
+      '-DTINYARMOS_BUILD_CHANNEL="nightly"'
+    )
+    ;;
+  *)
+    echo "TINYARMOS_BUILD_CHANNEL must be 'main' or 'nightly'." >&2
+    exit 1
+    ;;
+esac
+
 "${ZIG[@]}" cc \
   -target aarch64-windows-msvc \
   -std=c11 -Os -ffreestanding -fno-stack-protector -fshort-wchar -nostdlib \
   -Wall -Wextra -Werror \
+  "${BUILD_DEFINES[@]}" \
   -Wl,--subsystem=efi_application \
   -o build/BOOTAA64.EFI src/uefi.c
 

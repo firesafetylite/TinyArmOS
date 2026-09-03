@@ -88,6 +88,7 @@ jobs:
           assert tag.startswith("v")
           efi = Path("build/BOOTAA64.EFI").read_bytes()
           updater["validate_efi"](efi, tag[1:])
+          assert updater["embedded_channel"](efi) == "main"
           image = Path("build/TinyArmOS.img").read_bytes()
           assert image[512:520] == b"EFI PART"
           assert image[2048 * 512 + 82:2048 * 512 + 90] == b"FAT32   "

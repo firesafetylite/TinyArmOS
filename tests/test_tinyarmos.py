@@ -18,7 +18,7 @@ SITE_BUILDER = runpy.run_path(
 )
 
 
-def fake_efi(version: str, size: int = 4096) -> bytes:
+def fake_efi(version: str, size: int = 4096, channel: str = "main") -> bytes:
     marker = (
         f"TinyArmOS {version}\n"
         "architecture=ARM64\n"
@@ -36,6 +36,11 @@ def fake_efi(version: str, size: int = 4096) -> bytes:
     struct.pack_into("<H", payload, optional_offset, 0x20B)
     struct.pack_into("<H", payload, optional_offset + 68, 10)
     payload[512 : 512 + len(marker)] = marker
+    metadata = (
+        f"TinyArmOSBuildVersion={version}\n"
+        f"TinyArmOSBuildChannel={channel}\n"
+    ).encode("ascii")
+    payload[768 : 768 + len(metadata)] = metadata
     return bytes(payload)
 
 
@@ -79,9 +84,12 @@ class UpdaterTests(unittest.TestCase):
             ).channel,
             "nightly",
         )
+
     def test_release_assets_select_main_and_nightly_channels(self) -> None:
         stable_name = "TinyArmOS-v1.2.3-BOOTAA64.EFI"
-        nightly_name = "TinyArmOS-v1.3.0-nightly-BOOTAA64.EFI"
+        nightly_name = "TinyArmOS-nightly-BOOTAA64.EFI"
+        nightly_manifest = "TinyArmOS-nightly-update.txt"
+        manifest_url = f"https://github.com/test/{nightly_manifest}"
         releases = {
             UPDATER["MAIN_RELEASE_URL"]: {
                 "tag_name": "v1.2.3",
@@ -93,23 +101,30 @@ class UpdaterTests(unittest.TestCase):
                 "tag_name": "nightly",
                 "draft": False,
                 "prerelease": True,
-                "assets": [nightly_name, "SHA256SUMS"],
+                "assets": [nightly_name, nightly_manifest, "SHA256SUMS"],
             },
         }
         globals_ = UPDATER["release_assets"].__globals__
         original_get = globals_["https_get"]
 
         def fake_get(url: str, _limit: int, _accept: str) -> bytes:
+            if url == manifest_url:
+                return (
+                    "version=1.3.0\n"
+                    "size=4096\n"
+                    f"sha256={'a' * 64}\n"
+                    f"url={UPDATER['NIGHTLY_IMAGE_URL']}\n"
+                ).encode("ascii")
             release = releases[url]
-            release["assets"] = [
+            assets = [
                 {
                     "name": name,
                     "browser_download_url": f"https://github.com/test/{name}",
-                    "size": 4096 if name != "SHA256SUMS" else 128,
+                    "size": 4096 if name == stable_name or name == nightly_name else 128,
                 }
                 for name in release["assets"]
             ]
-            return json.dumps(release).encode("utf-8")
+            return json.dumps({**release, "assets": assets}).encode("utf-8")
 
         globals_["https_get"] = fake_get
         try:
@@ -145,12 +160,12 @@ class UpdaterTests(unittest.TestCase):
                     "nightly",
                     nightly,
                     "1.3.0",
-                    "TinyArmOS-v1.3.0-nightly-BOOTAA64.EFI",
+                    "TinyArmOS-nightly-BOOTAA64.EFI",
                     "https://firesafetylite.github.io/TinyArmOS/nightly/"
                     "TinyArmOS-latest-BOOTAA64.EFI",
                 ),
             ):
-                image = fake_efi(version)
+                image = fake_efi(version, channel=channel)
                 (source / filename).write_bytes(image)
                 manifest_name = (
                     "TinyArmOS-update.txt"
@@ -171,7 +186,7 @@ class UpdaterTests(unittest.TestCase):
             )
             self.assertEqual(
                 (output / "nightly" / "TinyArmOS-latest-BOOTAA64.EFI").read_bytes(),
-                fake_efi("1.3.0"),
+                fake_efi("1.3.0", channel="nightly"),
             )
             self.assertIn("Main manifest", (output / "index.html").read_text())
             self.assertIn("Nightly beta manifest", (output / "index.html").read_text())

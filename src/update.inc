@@ -712,7 +712,7 @@ static EFI_STATUS update_http_fetch_once(const char *url, UINT8 *buffer, UINTN c
     requestHeaders[0].FieldName = "Host";
     requestHeaders[0].FieldValue = host;
     requestHeaders[1].FieldName = "User-Agent";
-    requestHeaders[1].FieldValue = "TinyArmOS-Updater/" TINYARMOS_VERSION;
+    requestHeaders[1].FieldValue = "TinyArmOS-Updater/" TINYARMOS_DISPLAY_VERSION;
     requestHeaders[2].FieldName = "Accept";
     requestHeaders[2].FieldValue = "application/octet-stream";
     requestHeaders[3].FieldName = "Connection";
@@ -1066,9 +1066,9 @@ static void command_update(int checkOnly, int nightly) {
     print("Latest ");
     print(channelName);
     print(" build: ");
-    print(manifest.version);
+    print(nightly ? "nightly" : manifest.version);
     print(" (current ");
-    print(TINYARMOS_VERSION);
+    print(TINYARMOS_DISPLAY_VERSION);
     print(")\n");
     {
         int versionOrder = update_compare_versions(manifest.version, TINYARMOS_VERSION);
@@ -1130,8 +1130,8 @@ static void command_update(int checkOnly, int nightly) {
         goto cleanup;
     }
     print("TinyArmOS ");
-    print(manifest.version);
-    print(" installed.\nThe running shell remains TinyArmOS " TINYARMOS_VERSION " until reboot.\n");
+    print(nightly ? "nightly" : manifest.version);
+    print(" installed.\nThe running shell remains TinyArmOS " TINYARMOS_DISPLAY_VERSION " until reboot.\n");
     print("Type REBOOT to restart now: ");
     read_line(answer, sizeof(answer));
     if (streq(answer, "REBOOT")) {

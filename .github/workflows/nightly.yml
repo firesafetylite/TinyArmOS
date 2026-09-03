@@ -40,7 +40,9 @@ jobs:
           python -m unittest discover -s tests -v
           python tinyarmos --help
 
-      - name: Build image
+      - name: Build nightly image
+        env:
+          TINYARMOS_BUILD_CHANNEL: nightly
         run: make
 
       - name: Read and validate build version
@@ -55,6 +57,8 @@ jobs:
           updater = runpy.run_path("tinyarmos", run_name="nightly_validation")
           efi = Path("build/BOOTAA64.EFI").read_bytes()
           version = updater["validate_efi"](efi)
+          assert updater["embedded_channel"](efi) == "nightly"
+          assert b"TinyArmOS nightly\narchitecture=ARM64" in efi
           image = Path("build/TinyArmOS.img").read_bytes()
           disk = updater["Fat32Image"](image)
           assert disk.read_file(updater["BOOT_PATH"]) == efi
@@ -70,10 +74,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          efi_name="TinyArmOS-v${VERSION}-nightly-BOOTAA64.EFI"
+          efi_name="TinyArmOS-nightly-BOOTAA64.EFI"
           mkdir -p dist
           cp build/BOOTAA64.EFI "dist/${efi_name}"
-          cp build/TinyArmOS.img "dist/TinyArmOS-v${VERSION}-nightly.img"
+          cp build/TinyArmOS.img "dist/TinyArmOS-nightly.img"
           cp tinyarmos dist/tinyarmos
           chmod +x dist/tinyarmos
           zip -9 "dist/TinyArmOS-nightly-LICENSES.zip" \
@@ -104,7 +108,6 @@ jobs:
       - name: Create or replace rolling nightly release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.build.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -115,14 +118,14 @@ jobs:
               [[ -z "$asset" ]] || gh release delete-asset nightly "$asset" --yes
             done < <(gh release view nightly --json assets --jq '.assets[].name')
             gh release edit nightly \
-              --title "TinyArmOS v${VERSION} nightly" \
+              --title "TinyArmOS nightly" \
               --notes "Rolling beta build from the nightly branch at ${GITHUB_SHA}." \
               --prerelease
             gh release upload nightly dist/* --clobber
           else
             gh release create nightly dist/* \
               --verify-tag \
-              --title "TinyArmOS v${VERSION} nightly" \
+              --title "TinyArmOS nightly" \
               --notes "Rolling beta build from the nightly branch at ${GITHUB_SHA}." \
               --prerelease
           fi
@@ -160,7 +163,7 @@ jobs:
             --dir release-main
           gh release download nightly --repo "$GITHUB_REPOSITORY" \
             --pattern 'TinyArmOS-nightly-update.txt' \
-            --pattern 'TinyArmOS-v*-nightly-BOOTAA64.EFI' \
+            --pattern 'TinyArmOS-nightly-BOOTAA64.EFI' \
             --dir release-nightly
           python3 tools/make_update_site.py \
             --main release-main --nightly release-nightly --output public

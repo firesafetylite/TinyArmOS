@@ -328,11 +328,17 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("UPDATE_NIGHTLY_MANIFEST_URL", UPDATE_SOURCE)
         self.assertIn("nightly/TinyArmOS-update.txt", UPDATE_SOURCE)
         self.assertIn("update_digest_equal(currentDigest, manifest.digest)", UPDATE_SOURCE)
+        self.assertIn("TINYARMOS_DISPLAY_VERSION", UPDATE_SOURCE)
+        self.assertIn('TINYARMOS_BUILD_CHANNEL "main"', SOURCE)
 
     def test_nightly_pipeline_keeps_main_and_beta_channels_separate(self) -> None:
         self.assertIn("branches:\n      - nightly", NIGHTLY_WORKFLOW)
         self.assertIn("gh release create nightly", NIGHTLY_WORKFLOW)
-        self.assertIn("TinyArmOS-v${VERSION}-nightly.img", NIGHTLY_WORKFLOW)
+        self.assertIn("TinyArmOS-nightly.img", NIGHTLY_WORKFLOW)
+        self.assertIn("TinyArmOS-nightly-BOOTAA64.EFI", NIGHTLY_WORKFLOW)
+        self.assertNotIn("TinyArmOS-v${VERSION}-nightly", NIGHTLY_WORKFLOW)
+        self.assertIn("TINYARMOS_BUILD_CHANNEL: nightly", NIGHTLY_WORKFLOW)
+        self.assertIn('--title "TinyArmOS nightly"', NIGHTLY_WORKFLOW)
         self.assertIn("--prerelease", NIGHTLY_WORKFLOW)
         self.assertIn("git merge-base --is-ancestor", RELEASE_WORKFLOW)
         self.assertIn("TinyArmOS-nightly-update.txt", PAGES_WORKFLOW)

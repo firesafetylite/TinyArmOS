@@ -29,6 +29,16 @@ typedef UINT64             EFI_STATUS;
 #define EVT_NOTIFY_SIGNAL 0x00000200U
 #define TPL_CALLBACK      8U
 #define TINYARMOS_VERSION "0.1.4"
+#ifndef TINYARMOS_DISPLAY_VERSION
+#define TINYARMOS_DISPLAY_VERSION TINYARMOS_VERSION
+#endif
+#ifndef TINYARMOS_BUILD_CHANNEL
+#define TINYARMOS_BUILD_CHANNEL "main"
+#endif
+
+static const char gTinyArmOSBuildMetadata[] __attribute__((used)) =
+    "TinyArmOSBuildVersion=" TINYARMOS_VERSION "\n"
+    "TinyArmOSBuildChannel=" TINYARMOS_BUILD_CHANNEL "\n";
 
 struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
 struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
@@ -1266,7 +1276,7 @@ static int fs_restore_system(void) {
         runtime = fs_ensure_dir((UINTN)system, "runtime", FS_PROTECTED);
         security = fs_ensure_dir((UINTN)system, "security", FS_PROTECTED);
         fs_ensure_file((UINTN)system, "version.txt",
-            "TinyArmOS " TINYARMOS_VERSION "\narchitecture=ARM64\nfirmware=UEFI\nkernel=freestanding\nfilesystem=MiniFS2\nunix=no", FS_PROTECTED);
+            "TinyArmOS " TINYARMOS_DISPLAY_VERSION "\narchitecture=ARM64\nfirmware=UEFI\nkernel=freestanding\nfilesystem=MiniFS2\nunix=no", FS_PROTECTED);
         fs_ensure_file((UINTN)system, "manifest.txt",
             "Critical tree:\n/system/boot       loader, startup, and Boot Manager records\n/system/kernel     core, ABI, and memory records\n/system/firmware   UEFI interface records\n/system/config     boot and shell policy\n/system/drivers    hardware service records\n/system/runtime    MiniFS2 runtime records\n/system/security   integrity and protected paths\n/apps              installed native applications", FS_PROTECTED);
     }
@@ -2068,7 +2078,7 @@ static int boot_screen(EFI_HANDLE imageHandle) {
         "                    /___/\n\n"
     );
     gST->ConOut->SetAttribute(gST->ConOut, 0x07);
-    print("  TinyArmOS " TINYARMOS_VERSION " verified startup\n\n");
+    print("  TinyArmOS " TINYARMOS_DISPLAY_VERSION " verified startup\n\n");
     boot_stage(1, "ARM64 firmware and timer", 1);
     gStorageReady = (UINT8)storage_init(imageHandle);
     boot_stage(2, gStorageReady ? "persistent UEFI storage" : "volatile fallback storage", 1);
@@ -2276,7 +2286,7 @@ static void command_help(void) {
 }
 
 static void command_info(void) {
-    print("TinyArmOS " TINYARMOS_VERSION "\n");
+    print("TinyArmOS " TINYARMOS_DISPLAY_VERSION "\n");
     print("Architecture : ARM64 / AArch64\n");
     print("Boot method  : UEFI (BOOTAA64.EFI)\n");
     print("Filesystem   : MiniFS2, 96 hierarchical nodes, 2 snapshots\n");
@@ -2653,7 +2663,7 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     settings_apply_runtime();
     gST->ConOut->ClearScreen(gST->ConOut);
     settings_use_accent_color();
-    print("TinyArmOS " TINYARMOS_VERSION);
+    print("TinyArmOS " TINYARMOS_DISPLAY_VERSION);
     settings_use_default_color();
     print(" - ARM64 shell + MiniFS2\n");
     print("Boot Manager: ready. Type 'help'.\n\n");

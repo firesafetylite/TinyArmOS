@@ -6,8 +6,8 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ### Added
 
-- A rolling `nightly` beta branch and prerelease pipeline that publishes every pushed build while leaving `main` stable until an explicitly approved major release.
-- User-selectable `main` and `nightly` channels in both the in-OS updater and the `tinyarmos` host updater.
+- A rolling `nightly` beta branch and prerelease pipeline that overwrites one unversioned nightly release on every push while leaving `main` stable until an explicitly approved major release.
+- User-selectable `main` and `nightly` channels in both the in-OS updater and the `tinyarmos` host updater; nightly OS builds display `TinyArmOS nightly` rather than a version number.
 - Separate, checksum-validated GitHub Pages manifests for the main and nightly EFI update channels.
 
 ### Changed

@@ -74,6 +74,8 @@ jobs:
           assert image[512:520] == b"EFI PART"
           assert image[2048 * 512 + 82:2048 * 512 + 90] == b"FAT32   "
           disk = updater["Fat32Image"](image)
-          updater["validate_efi"](disk.read_file(updater["BOOT_PATH"]))
+          efi = disk.read_file(updater["BOOT_PATH"])
+          updater["validate_efi"](efi)
+          assert updater["embedded_channel"](efi) == "main"
           assert disk.read_file((b"DOOMU   WAD",)).startswith(b"IWAD")
           PY

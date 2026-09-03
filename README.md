@@ -18,7 +18,7 @@ To use the image with UTM on Apple silicon, create an emulated ARM64 **Other** v
 
 ## Release channels
 
-- **Nightly beta:** active development lives on the [`nightly`](https://github.com/firesafetylite/TinyArmOS/tree/nightly) branch. Every push replaces the rolling [nightly prerelease](https://github.com/firesafetylite/TinyArmOS/releases/tag/nightly) and its versioned `.img` build.
+- **Nightly beta:** active development lives on the [`nightly`](https://github.com/firesafetylite/TinyArmOS/tree/nightly) branch. Every push overwrites the same rolling [nightly prerelease](https://github.com/firesafetylite/TinyArmOS/releases/tag/nightly) and `TinyArmOS-nightly.img`; it does not create another release. Nightly builds identify themselves as `TinyArmOS nightly` instead of displaying a version number.
 - **Main:** `main` is the stable line. Nightly changes are promoted to `main` only with explicit project-owner approval for a major release; version tags on `main` publish stable releases.
 
 The update commands default to `main`, so users must deliberately opt into the nightly beta channel.
@@ -236,7 +236,7 @@ update check nightly      check the rolling nightly beta
 update nightly            install from the rolling nightly beta
 ```
 
-The updater compares both the version and EFI digest, so a newer nightly build can be detected even when its version number has not changed. It refuses channel changes that would downgrade the installed version.
+The updater compares an internal compatibility version and the EFI digest, so a changed nightly build is detected even though the OS displays only `nightly`. It refuses channel changes that would downgrade the installed compatibility version.
 
 The in-OS updater requires VM firmware that exposes UEFI HTTP/TLS. That firmware is platform hardware and is not contained in the maintained disk image; stock VM firmware may therefore report that the service is unavailable. When available, the updater uses IPv4 DHCP and automatically continues through the UTM Shared Network fallback, validates the redirect-free GitHub Pages manifest and SHA-256 checksum, confirms the download is an ARM64 EFI application, rejects rollback versions, and keeps `EFI/BOOT/BOOTAA64.BAK` as a recovery copy. Reboot after installation.
 

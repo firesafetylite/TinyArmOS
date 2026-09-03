@@ -40,9 +40,16 @@ VERSION_MARKER_RE = re.compile(
     rb"TinyArmOS ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     rb"(?:\.(?:0|[1-9][0-9]*))?)\narchitecture=ARM64\nfirmware=UEFI"
 )
-NIGHTLY_EFI_RE = re.compile(
-    r"TinyArmOS-v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
-    r"(?:\.(?:0|[1-9][0-9]*))?)-nightly-BOOTAA64\.EFI"
+BUILD_VERSION_MARKER_RE = re.compile(
+    rb"TinyArmOSBuildVersion=((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    rb"(?:\.(?:0|[1-9][0-9]*))?)\n"
+)
+BUILD_CHANNEL_MARKER_RE = re.compile(rb"TinyArmOSBuildChannel=(main|nightly)\n")
+NIGHTLY_EFI_NAME = "TinyArmOS-nightly-BOOTAA64.EFI"
+NIGHTLY_MANIFEST_NAME = "TinyArmOS-nightly-update.txt"
+NIGHTLY_IMAGE_URL = (
+    "https://firesafetylite.github.io/TinyArmOS/nightly/"
+    "TinyArmOS-latest-BOOTAA64.EFI"
 )
 BOOT_PATH = (b"EFI        ", b"BOOT       ", b"BOOTAA64EFI")
 
@@ -70,9 +77,27 @@ def version_tuple(text: str) -> Tuple[int, int, int]:
 
 
 def embedded_version(image: bytes) -> str:
-    matches = {match.group(1).decode("ascii") for match in VERSION_MARKER_RE.finditer(image)}
+    matches = {
+        match.group(1).decode("ascii") for match in VERSION_MARKER_RE.finditer(image)
+    }
+    matches.update(
+        match.group(1).decode("ascii")
+        for match in BUILD_VERSION_MARKER_RE.finditer(image)
+    )
     if len(matches) != 1:
         raise UpdateError("could not identify exactly one TinyArmOS version in the EFI image")
+    return matches.pop()
+
+
+def embedded_channel(image: bytes) -> str:
+    matches = {
+        match.group(1).decode("ascii")
+        for match in BUILD_CHANNEL_MARKER_RE.finditer(image)
+    }
+    if not matches:
+        return "main"
+    if len(matches) != 1:
+        raise UpdateError("could not identify exactly one TinyArmOS channel in the EFI image")
     return matches.pop()
 
 
@@ -130,6 +155,31 @@ def https_get(url: str, limit: int, accept: str) -> bytes:
     return data
 
 
+def parse_update_manifest(raw: bytes, expected_url: str) -> Dict[str, str]:
+    try:
+        lines = raw.decode("ascii").splitlines()
+    except UnicodeDecodeError as error:
+        raise UpdateError("update manifest is not ASCII") from error
+    entries: Dict[str, str] = {}
+    for line in lines:
+        if not re.fullmatch(r"[a-z0-9]+=[ -~]+", line):
+            raise UpdateError("update manifest has invalid syntax")
+        key, value = line.split("=", 1)
+        if key in entries:
+            raise UpdateError(f"update manifest contains duplicate field {key}")
+        entries[key] = value
+    if set(entries) != {"version", "size", "sha256", "url"}:
+        raise UpdateError("update manifest has unexpected fields")
+    version_tuple(entries["version"])
+    if not entries["size"].isdigit() or not 512 <= int(entries["size"]) <= MAX_EFI_BYTES:
+        raise UpdateError("update manifest has an invalid EFI size")
+    if not re.fullmatch(r"[0-9a-f]{64}", entries["sha256"]):
+        raise UpdateError("update manifest has an invalid SHA-256 digest")
+    if entries["url"] != expected_url:
+        raise UpdateError("update manifest has an unexpected download URL")
+    return entries
+
+
 def release_assets(channel: str) -> Tuple[str, Dict[str, dict], str]:
     if channel not in {"main", "nightly"}:
         raise UpdateError(f"unknown update channel: {channel}")
@@ -166,20 +216,24 @@ def release_assets(channel: str) -> Tuple[str, Dict[str, dict], str]:
     else:
         if tag != "nightly" or release.get("prerelease") is not True:
             raise UpdateError("the nightly GitHub Release is not a valid prerelease")
-        nightly_assets = [
-            (match.group(1), name)
-            for name in assets
-            if (match := NIGHTLY_EFI_RE.fullmatch(name)) is not None
-        ]
-        if len(nightly_assets) != 1:
-            raise UpdateError("nightly GitHub Release must contain exactly one EFI build")
-        version, expected_efi = nightly_assets[0]
-        version_tuple(version)
+        expected_efi = NIGHTLY_EFI_NAME
+        if NIGHTLY_MANIFEST_NAME not in assets:
+            raise UpdateError(f"nightly GitHub Release is missing {NIGHTLY_MANIFEST_NAME}")
+        manifest_asset = assets[NIGHTLY_MANIFEST_NAME]
+        manifest_raw = https_get(
+            manifest_asset["browser_download_url"],
+            MAX_METADATA_BYTES,
+            "application/octet-stream",
+        )
+        manifest = parse_update_manifest(manifest_raw, NIGHTLY_IMAGE_URL)
+        version = manifest["version"]
     for required in (expected_efi, "SHA256SUMS"):
         if required not in assets:
             raise UpdateError(f"{channel} GitHub Release is missing {required}")
     if not 512 <= assets[expected_efi]["size"] <= MAX_EFI_BYTES:
         raise UpdateError(f"{channel} EFI release asset has an invalid size")
+    if channel == "nightly" and int(manifest["size"]) != assets[expected_efi]["size"]:
+        raise UpdateError("nightly manifest size does not match its EFI release asset")
     return version, assets, expected_efi
 
 
@@ -516,10 +570,13 @@ def update_command(args: argparse.Namespace) -> int:
     kind, target = target_disk(requested_target)
     current_image = read_installed_image(kind, target)
     current_version = validate_efi(current_image)
-    print(f"Installed TinyArmOS: {current_version}")
+    current_channel = embedded_channel(current_image)
+    current_label = "nightly" if current_channel == "nightly" else current_version
+    print(f"Installed TinyArmOS: {current_label}")
     print(f"Checking the {args.channel} GitHub update channel...")
     latest_version, assets, efi_name = release_assets(args.channel)
-    print(f"Latest {args.channel} build: {latest_version}")
+    latest_label = "nightly" if args.channel == "nightly" else latest_version
+    print(f"Latest {args.channel} build: {latest_label}")
     checksum_asset = assets["SHA256SUMS"]
     checksum_text = https_get(
         checksum_asset["browser_download_url"], MAX_METADATA_BYTES, "application/octet-stream"
@@ -549,12 +606,14 @@ def update_command(args: argparse.Namespace) -> int:
     if actual_digest != expected_digest:
         raise UpdateError("downloaded EFI failed SHA-256 verification")
     validate_efi(image, latest_version)
+    if embedded_channel(image) != args.channel:
+        raise UpdateError("downloaded EFI channel does not match the selected channel")
     print(f"Verified ARM64 EFI image (SHA-256 {actual_digest}).")
     if not args.yes:
         if not sys.stdin.isatty():
             raise UpdateError("confirmation required; rerun with --yes in a non-interactive shell")
         answer = input(
-            f"Update {requested_target} to TinyArmOS {latest_version} "
+            f"Update {requested_target} to TinyArmOS {latest_label} "
             f"from {args.channel}? [y/N] "
         )
         if answer.strip().lower() not in ("y", "yes"):
@@ -563,7 +622,10 @@ def update_command(args: argparse.Namespace) -> int:
     backup = install_image(kind, target, image)
     installed = read_installed_image(kind, target)
     validate_efi(installed, latest_version)
-    print(f"Updated TinyArmOS to {latest_version} from {args.channel}.")
+    if embedded_channel(installed) != args.channel:
+        raise UpdateError("installed EFI channel failed read-back verification")
+    installed_label = "nightly" if args.channel == "nightly" else latest_version
+    print(f"Updated TinyArmOS to {installed_label} from {args.channel}.")
     print(f"Backup: {backup}")
     print("Start the VM normally. Delete the .bak file after confirming it boots.")
     return 0

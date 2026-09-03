@@ -13,11 +13,10 @@ from typing import Dict, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 UPDATER = runpy.run_path(str(ROOT / "tinyarmos"), run_name="update_site_validation")
-VERSION_PATTERN = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))?"
 CHANNELS = {
     "main": {
         "manifest": "TinyArmOS-update.txt",
-        "binary": re.compile(rf"TinyArmOS-v({VERSION_PATTERN})-BOOTAA64\.EFI"),
+        "binary": "TinyArmOS-v{version}-BOOTAA64.EFI",
         "url": (
             "https://firesafetylite.github.io/TinyArmOS/"
             "TinyArmOS-latest-BOOTAA64.EFI"
@@ -26,9 +25,7 @@ CHANNELS = {
     },
     "nightly": {
         "manifest": "TinyArmOS-nightly-update.txt",
-        "binary": re.compile(
-            rf"TinyArmOS-v({VERSION_PATTERN})-nightly-BOOTAA64\.EFI"
-        ),
+        "binary": "TinyArmOS-nightly-BOOTAA64.EFI",
         "url": (
             "https://firesafetylite.github.io/TinyArmOS/nightly/"
             "TinyArmOS-latest-BOOTAA64.EFI"
@@ -74,24 +71,18 @@ def publish_channel(source: Path, output: Path, channel: str) -> None:
     entries = parse_manifest(manifest_path)
     if entries["url"] != config["url"]:
         raise SiteError(f"{channel} manifest has an unexpected download URL")
-    candidates = []
-    binary_pattern = config["binary"]
-    assert isinstance(binary_pattern, re.Pattern)
-    for path in source.iterdir():
-        match = binary_pattern.fullmatch(path.name)
-        if match:
-            candidates.append((path, match.group(1)))
-    if len(candidates) != 1:
-        raise SiteError(f"expected one {channel} EFI asset, found {len(candidates)}")
-    binary, filename_version = candidates[0]
-    if filename_version != entries["version"]:
-        raise SiteError(f"{channel} EFI filename does not match its manifest version")
+    binary_name = str(config["binary"]).format(version=entries["version"])
+    binary = source / binary_name
+    if not binary.is_file():
+        raise SiteError(f"missing {channel} EFI asset {binary_name}")
     data = binary.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     if entries["size"] != str(len(data)) or entries["sha256"] != digest:
         raise SiteError(f"{channel} manifest does not match its EFI asset")
     try:
         UPDATER["validate_efi"](data, entries["version"])
+        if UPDATER["embedded_channel"](data) != channel:
+            raise SiteError(f"{channel} EFI metadata identifies another channel")
     except UPDATER["UpdateError"] as error:
         raise SiteError(str(error)) from error
     destination = output / str(config["directory"])
