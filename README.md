@@ -1,7 +1,7 @@
 
 # (DISCLAIMER: TinyArmOS is a project fully managed by ChatGPT codex, everything in this github besides this message your seeing was created and is overseen by chatgpt, if you have any issues email me at 8minecraft.19@gmail.com)
 
-# TinyArmOS v0.1.4
+# TinyArmOS v0.1.5
 
 [![Main CI](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml)
 [![Nightly](https://github.com/firesafetylite/TinyArmOS/actions/workflows/nightly.yml/badge.svg?branch=nightly)](https://github.com/firesafetylite/TinyArmOS/actions/workflows/nightly.yml)
@@ -12,14 +12,14 @@ TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a pers
 
 ## Download and run
 
-Open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest) and download its `.img` asset. New releases name it `TinyArmOS-vVERSION.img`; older releases may use `-UTM.img`. This 64 MiB GPT/FAT32 disk image is the sole maintained boot distribution. The former `.utm.zip` bundle is deprecated and is no longer generated. Release EFI and manifest files remain machine-facing update infrastructure rather than separate supported boot distributions. Verify downloads with `SHA256SUMS`.
+Open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest) and download its `.img` asset. New releases name it `TinyArmOS-vVERSION.img`; older releases may use `-UTM.img`. This 128 MiB GPT/FAT disk image is the sole maintained boot distribution. The former `.utm.zip` bundle is deprecated and is no longer generated. Release EFI and manifest files remain machine-facing update infrastructure rather than separate supported boot distributions. Verify downloads with `SHA256SUMS`.
 
 To use the image with UTM on Apple silicon, create an emulated ARM64 **Other** virtual machine with UEFI boot and at least 256 MiB RAM, import the `.img` as a non-removable VirtIO drive, and use Shared Network with a `virtio-net-pci` adapter if networking is needed. Then start the VM; ARM64 UEFI discovers `EFI/BOOT/BOOTAA64.EFI` automatically.
 
 ## Release channels
 
 - **Nightly beta:** active development lives on the [`nightly`](https://github.com/firesafetylite/TinyArmOS/tree/nightly) branch. Every push overwrites the same rolling [nightly prerelease](https://github.com/firesafetylite/TinyArmOS/releases/tag/nightly) and `TinyArmOS-nightly.img`; it does not create another release. Nightly builds identify themselves as `TinyArmOS nightly` instead of displaying a version number.
-- **Main:** `main` is the stable line. Nightly changes are promoted to `main` only with explicit project-owner approval for a major release; version tags on `main` publish stable releases.
+- **Main:** `main` is the stable line. Nightly changes are promoted to `main` only with explicit project-owner approval; version tags on `main` publish stable releases.
 
 The update commands default to `main`, so users must deliberately opt into the nightly beta channel.
 
@@ -29,13 +29,17 @@ The GPT image contains two isolated partitions:
 1  TINYRECOV  FAT16 EFI System Partition
    EFI/BOOT/BOOTAA64.EFI   protected pre-OS environment
    BOOTORD.CFG             saved default boot partition
-2  TINYARMOS  FAT32 system/data partition
+2  TINYARMOS  FAT32 initial system/data partition
    TINYOS.NEW              one-shot first-boot installation marker
    DOOMU.WAD               Freedoom Phase 1
    TINYFS0.BIN/TINYFS1.BIN MiniFS2 snapshots after first boot
+3+ dynamically created FAT16 system/data partitions
+   initially empty; `repair N` installs TinyArmOS on the chosen partition
 ```
 
-Normal TinyArmOS filesystem commands operate only on `TINYARMOS`; they do not expose `TINYRECOV`.
+The original partition extents remain unchanged and the added 64 MiB of image space is initially unallocated. Existing 64 MiB images can still boot and update their recovery EFI, but must be replaced with the v0.1.5 128 MiB image before `partition add` has room to succeed.
+
+Normal TinyArmOS filesystem commands operate only on the currently booted system/data partition; they do not expose `TINYRECOV`.
 
 If UEFI opens its own shell, enter:
 
@@ -53,26 +57,31 @@ Verified firmware startup checks:
 4. Filesystem structure and every active file checksum
 5. Whether the TinyArmOS operating system is bootable
 
-This environment runs before the normal TinyArmOS shell. Press **Enter** during the two-second startup prompt to interrupt boot and open its partition menu. Use Up/Down and Enter to choose, **S** to save the selected default, or **R** to enter recovery immediately. In recovery, `order 1` selects TinyArmOS System and `order 2` selects Pre-OS Recovery as the persistent default. It also opens automatically when TinyArmOS is missing, its system snapshot cannot be mounted, or integrity verification fails. Startup never silently repairs a damaged installation.
+This environment runs before the normal TinyArmOS shell. Press **Enter** during the two-second startup prompt to interrupt boot and open its partition menu. Use Up/Down and Enter to choose, **S** to save the selected default, or **R** to enter recovery immediately. GPT numbers are canonical: partition **1** is protected Pre-OS Recovery, partition **2** is the original TinyArmOS system, and newly added partitions are **3+**. In recovery, `order N` saves any registered partition number as the persistent default. It also opens automatically when TinyArmOS is missing, its system snapshot cannot be mounted, or integrity verification fails. Startup never silently repairs a damaged installation.
 
 The former recovery methods and management commands now exist only in this pre-OS environment; there is no `bootmgr` command inside TinyArmOS. The environment remains available after an OS wipe and always provides 256 lines of scrollback with Up/Down line scrolling, PageUp/PageDown paging, Home for the oldest output, and End or Esc to return live.
 
 ```text
-partitions                     list bootable partitions
-order N                        set partition 1 or 2 as default
-scan                           verify MiniFS2 and both snapshots
-repair                         repair or reconstruct system files
-rollback                       load the previous valid snapshot
-pwd/ls/cd                      navigate files before boot
-cat                             inspect a file
+partitions                     list registered GPT partitions
+partition add MIB NAME         create a named FAT partition (minimum 4 MiB)
+partition name N NAME          rename a numbered non-protected partition
+use N                          select a partition for file navigation
+order N                        save a numbered partition as the default
+scan N                         verify that partition and both snapshots
+repair N                       repair or install TinyArmOS on that partition
+rollback N                     load that partition's previous snapshot
+pwd/ls/cd                      navigate the selected partition before boot
+cat                            inspect a file
 stat/tree                      inspect metadata and directory trees
-reset                          reset MiniFS2 after confirmation
+reset N                        reset and reinstall a target after confirmation
 scroll / scroll clear          inspect or clear 256-line scrollback
-boot                           verify and start TinyArmOS
+boot [N]                       verify and start the selected partition
 reboot/shutdown                restart or power off
 ```
 
-MiniFS2 alternates between two checksummed snapshots. If the active installation is unusable, use `rollback`, `repair`, or `reset`, then `boot`.
+Partition names are 1–11 characters using letters, digits, `_`, or `-`; names are normalized to uppercase and must be unique. Partition creation and naming update both GPT copies and FAT metadata, and require a reboot before firmware volume discovery is refreshed. The recovery partition rejects every user-targeted mutation.
+
+MiniFS2 alternates between two checksummed snapshots independently on each system/data partition. If partition 2 is unusable, for example, use `rollback 2`, `repair 2`, or `reset 2`, then `boot 2`.
 
 ## MiniFS2
 
@@ -118,9 +127,9 @@ fsck
 fault PATH
 ```
 
-`rm -rf` recursively removes files and directories and refuses an in-use working-directory tree. Exact `rm -rf /` is protected: first run `protect unlock` and type `UNLOCK`. It then empties the entire `TINYARMOS` system partition—including snapshots, user files, settings, Freedoom, and every other entry—and powers off.
+`rm -rf` recursively removes files and directories and refuses an in-use working-directory tree. Exact `rm -rf /` is protected: first run `protect unlock` and type `UNLOCK`. It then empties the entire currently booted system/data partition—including snapshots, user files, settings, Freedoom, and every other entry—and powers off.
 
-The separate `TINYRECOV` partition is never part of that wipe, so its pre-OS environment and saved boot order remain intact. The next boot detects the empty system partition and enters recovery automatically; `repair` or `reset` can reconstruct a bootable MiniFS2 installation. This is logical deletion rather than secure media erasure; VM snapshots, host backups, or forensic recovery may still restore data.
+The separate `TINYRECOV` partition is never part of that wipe, so its pre-OS environment, partition registry, and saved boot order remain intact. The next attempted boot of the empty target enters recovery automatically; `repair N` or `reset N` can reconstruct a bootable MiniFS2 installation there. This is logical deletion rather than secure media erasure; VM snapshots, host backups, or forensic recovery may still restore data.
 
 Example:
 
@@ -267,7 +276,7 @@ python3 -m venv /tmp/tinyarmos-venv
 PATH="/tmp/tinyarmos-venv/bin:$PATH" make
 ```
 
-Alternatively, install Zig 0.14.1 directly and run `make`. `build.sh` compiles the ARM64 EFI executable, builds an isolated recovery ESP plus a FAT32 system partition in one 64 MiB GPT disk, embeds Freedoom, and generates `build/BOOTAA64.EFI` plus the canonical `build/TinyArmOS.img`. The image builder and host update command use only Python's standard library.
+Alternatively, install Zig 0.14.1 directly and run `make`. `build.sh` compiles the ARM64 EFI executable, builds an isolated recovery ESP plus a FAT32 system partition in one 128 MiB GPT disk with append-only expansion space, embeds Freedoom, and generates `build/BOOTAA64.EFI` plus the canonical `build/TinyArmOS.img`. The image builder and host update command use only Python's standard library.
 
 CI checks that the EFI output is an AArch64 PE32+ application, validates the GPT/FAT32 image, and confirms that the image contains the exact built EFI executable and Freedoom data. These structural checks do not replace a firmware boot test; when changing boot or runtime behavior, also attach the generated image to an ARM64 UEFI VM and test it when practical.
 

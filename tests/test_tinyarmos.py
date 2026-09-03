@@ -204,7 +204,24 @@ class UpdaterTests(unittest.TestCase):
             wad_path.write_bytes(wad)
             IMAGE_BUILDER["build_image"](old_path, disk_path, wad_path)
 
-            before = UPDATER["Fat32Image"](disk_path.read_bytes())
+            disk_bytes = disk_path.read_bytes()
+            self.assertEqual(len(disk_bytes), 128 * 1024 * 1024)
+            header = disk_bytes[512:1024]
+            entries_lba = struct.unpack_from("<Q", header, 72)[0]
+            entry_size = struct.unpack_from("<I", header, 84)[0]
+            entries_offset = entries_lba * 512
+            system_entry = entries_offset + entry_size
+            self.assertEqual(struct.unpack_from("<Q", disk_bytes, system_entry + 40)[0], 131038)
+            self.assertEqual(
+                disk_bytes[entries_offset + entry_size * 2 : entries_offset + entry_size * 3],
+                bytes(entry_size),
+            )
+            table_with_hole = bytearray(disk_bytes)
+            table_with_hole[entries_offset : entries_offset + entry_size] = bytes(entry_size)
+            with self.assertRaises(UPDATER["UpdateError"]):
+                UPDATER["Fat32Image"](bytes(table_with_hole), 0)
+
+            before = UPDATER["Fat32Image"](disk_bytes)
             before_system = UPDATER["Fat32Image"](disk_path.read_bytes(), 1)
             self.assertEqual(before.read_file(UPDATER["BOOT_PATH"]), old_efi)
             self.assertEqual(before_system.read_file((b"DOOMU   WAD",)), wad)

@@ -7,8 +7,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / "src" / "uefi.c").read_text(encoding="utf-8")
 UPDATE_SOURCE = (ROOT / "src" / "update.inc").read_text(encoding="utf-8")
+PARTITION_SOURCE = (ROOT / "src" / "partition.inc").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 BUILD_SCRIPT = (ROOT / "build.sh").read_text(encoding="utf-8")
+IMAGE_SOURCE = (ROOT / "tools" / "make_image.py").read_text(encoding="utf-8")
 RELEASE_WORKFLOW = (ROOT / ".github" / "workflows" / "release.yml").read_text(
     encoding="utf-8"
 )
@@ -26,7 +28,7 @@ def source_block(start: str, end: str) -> str:
 
 class ShellSourceTests(unittest.TestCase):
     def test_release_version(self) -> None:
-        self.assertIn('#define TINYARMOS_VERSION "0.1.4"', SOURCE)
+        self.assertIn('#define TINYARMOS_VERSION "0.1.5"', SOURCE)
 
     def test_main_help_documents_every_canonical_command(self) -> None:
         help_text = source_block(
@@ -87,17 +89,20 @@ class ShellSourceTests(unittest.TestCase):
         commands = [
             "help",
             "partitions",
+            "partition add MIB NAME",
+            "partition name N NAME",
+            "use N",
             "order N",
-            "scan",
-            "repair",
-            "rollback",
+            "scan N",
+            "repair N",
+            "rollback N",
             "pwd",
             "ls [PATH]",
             "cd [PATH|-]",
             "cat PATH",
             "stat PATH",
             "tree [PATH]",
-            "reset",
+            "reset N",
             "scroll",
             "scroll clear",
             "boot",
@@ -138,11 +143,12 @@ class ShellSourceTests(unittest.TestCase):
             "static void pre_os_environment(void)", "static void command_help(void)"
         )
         entry = source_block("EFI_STATUS EFIAPI EfiMain", "for (;;) {")
-        menu = source_block("static int pre_os_boot_menu(void)", "static int boot_screen")
+        menu = source_block("static UINTN pre_os_boot_menu(void)", "static int boot_screen")
         self.assertIn("Up/Down select, Enter boot, S save default, R recovery", menu)
         self.assertIn("Press Enter to interrupt boot and open the partition menu", menu)
-        self.assertIn("boot_order_save(recovery)", menu)
-        self.assertIn("return pre_os_boot_prompt();", boot)
+        self.assertIn("boot_order_save(selected)", menu)
+        self.assertIn("targetPartition = pre_os_boot_prompt();", boot)
+        self.assertIn("if (targetPartition == 1U) return 1;", boot)
         self.assertIn("=== TinyArmOS Pre-OS Environment ===", pre_os)
         self.assertIn("TinyArmOS has not started", pre_os)
         self.assertIn("if (!gScrollbackEnabled) scrollback_enable();", pre_os)
@@ -154,15 +160,18 @@ class ShellSourceTests(unittest.TestCase):
             "static void pre_os_help(void)",
         )
         repair = source_block(
-            "static int pre_os_repair(void)",
-            "static int boot_screen(EFI_HANDLE imageHandle)",
+            "static int pre_os_repair(UINTN partition)",
+            "static void pre_os_print_partitions",
         )
         self.assertIn("osMissing = storage_os_missing();", boot)
         self.assertIn("storage_path_exists(gFactoryInstallPath)", boot)
         self.assertIn("else if (!mounted && !snapshotFiles)", boot)
         self.assertIn("OS MISSING - OPENING PRE-OS ENVIRONMENT", boot)
         self.assertNotIn("fs_check(1, 0)", boot)
+        self.assertIn("partition == 1U", repair)
+        self.assertIn("storage_activate_partition(partition)", repair)
         self.assertIn("fs_check(1, 1);", repair)
+        self.assertIn("fs_format();", repair)
         self.assertIn("fs_commit()", repair)
         self.assertIn("storage_clear_os_missing()", repair)
 
@@ -275,7 +284,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertNotIn("ERASE ROOT", root_branch)
 
     def test_os_wipe_uses_dedicated_volume_identity_and_recursive_delete(self) -> None:
-        self.assertIn('storage_volume_has_label(gVolumeRoot, "TINYARMOS")', SOURCE)
+        self.assertIn("return gActivePartition >= 2U", SOURCE)
         self.assertIn('storage_volume_has_label(gBootVolumeRoot, "TINYARMOS")', SOURCE)
         wipe = source_block(
             "static int storage_wipe_directory(",
@@ -291,6 +300,32 @@ class ShellSourceTests(unittest.TestCase):
             wipe.index("storage_collect_entries(directory"),
             wipe.index("child->Delete(child)"),
         )
+
+    def test_partition_management_is_targeted_and_protects_recovery(self) -> None:
+        pre_os = source_block(
+            "static void pre_os_environment(void)", "static void command_help(void)"
+        )
+        for command in ("scan", "repair", "rollback", "reset"):
+            with self.subTest(command=command):
+                self.assertIn(f'starts_with(line, "{command} ")', pre_os)
+                self.assertIn(
+                    f'print("{command}: provide a non-protected partition number', pre_os
+                )
+        self.assertIn("if (partition == 1U)", SOURCE)
+        self.assertIn("partition < 2U", PARTITION_SOURCE)
+        self.assertIn("partition_add(mebibytes", pre_os)
+        self.assertIn("partition_rename(partition", pre_os)
+        self.assertIn("gFatPartitionGuid", PARTITION_SOURCE)
+        self.assertIn("partition_format_fat16", PARTITION_SOURCE)
+        self.assertLess(
+            PARTITION_SOURCE.index("disk->backupEntriesLba"),
+            PARTITION_SOURCE.index("disk->primaryEntriesLba", PARTITION_SOURCE.index("static int partition_disk_commit")),
+        )
+
+    def test_image_reserves_append_only_partition_space(self) -> None:
+        self.assertIn("IMAGE_BYTES = 128 * 1024 * 1024", IMAGE_SOURCE)
+        self.assertIn("SYSTEM_LAST = 131038", IMAGE_SOURCE)
+        self.assertIn("format_system_fat32(image, SYSTEM_LAST", IMAGE_SOURCE)
 
     def test_split_layout_wipes_the_entire_system_partition(self) -> None:
         wipe = source_block(

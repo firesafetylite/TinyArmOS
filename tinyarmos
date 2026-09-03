@@ -29,7 +29,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 REPOSITORY = "firesafetylite/TinyArmOS"
 MAIN_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 NIGHTLY_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/tags/nightly"
-USER_AGENT = "TinyArmOS-Host-Updater/0.1.4"
+USER_AGENT = "TinyArmOS-Host-Updater/0.1.5"
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_EFI_BYTES = 16 * 1024 * 1024
 ESP_TYPE = uuid.UUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
@@ -329,18 +329,16 @@ class Fat32Image:
         entry_size = struct.unpack_from("<I", self.data, 512 + 84)[0]
         if not entry_size or entry_size < 128 or entry_count > 4096:
             raise UpdateError("target has an invalid GPT partition table")
-        entries_offset = entries_lba * 512
-        partitions = []
-        for index in range(entry_count):
-            offset = entries_offset + index * entry_size
-            if offset + entry_size > len(self.data):
-                break
-            first_lba = struct.unpack_from("<Q", self.data, offset + 32)[0]
-            if self.data[offset : offset + 16] != bytes(16) and first_lba:
-                partitions.append(first_lba)
-        if partition_index < 0 or partition_index >= len(partitions):
+        if partition_index < 0 or partition_index >= entry_count:
             raise UpdateError(f"target has no GPT partition {partition_index + 1}")
-        return partitions[partition_index]
+        entries_offset = entries_lba * 512
+        offset = entries_offset + partition_index * entry_size
+        if offset + entry_size > len(self.data):
+            raise UpdateError("target has a truncated GPT partition table")
+        first_lba = struct.unpack_from("<Q", self.data, offset + 32)[0]
+        if self.data[offset : offset + 16] == bytes(16) or not first_lba:
+            raise UpdateError(f"target has no GPT partition {partition_index + 1}")
+        return first_lba
 
     def _cluster_offset(self, cluster: int) -> int:
         if cluster < 2 or cluster >= self.cluster_count + 2:

@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           test -s build/BOOTAA64.EFI
-          test "$(stat -c '%s' build/TinyArmOS.img)" -eq 67108864
+          test "$(stat -c '%s' build/TinyArmOS.img)" -eq 134217728
           test ! -e build/TinyArmOS.utm
           test ! -e build/TinyArmOS-UTM.img
           file build/BOOTAA64.EFI | grep -Eq 'PE32\+ executable.*Aarch64'
@@ -73,6 +73,8 @@ jobs:
           strings build/BOOTAA64.EFI | grep -Fq 'The pre-OS environment remains and will open at the next boot.'
           strings build/BOOTAA64.EFI | grep -Fq '=== TinyArmOS Pre-OS Environment ==='
           strings build/BOOTAA64.EFI | grep -Fq 'Up/Down select, Enter boot, S save default, R recovery'
+          strings build/BOOTAA64.EFI | grep -Fq 'partition add MIB NAME'
+          strings build/BOOTAA64.EFI | grep -Fq 'repair N         repair or install TinyArmOS'
           ! strings build/BOOTAA64.EFI | grep -Fq 'bootmgr              open'
           ! strings build/BOOTAA64.EFI | grep -Fq 'Recovery Agent'
           ! strings build/BOOTAA64.EFI | grep -Fq 'command: recovery'
@@ -92,7 +94,8 @@ jobs:
           assert updater["embedded_channel"](efi) == "main"
           image = Path("build/TinyArmOS.img").read_bytes()
           assert image[512:520] == b"EFI PART"
-          assert image[2048 * 512 + 82:2048 * 512 + 90] == b"FAT32   "
+          assert image[2048 * 512 + 54:2048 * 512 + 62] == b"FAT16   "
+          assert image[34816 * 512 + 82:34816 * 512 + 90] == b"FAT32   "
           recovery = updater["Fat32Image"](image, 0)
           system = updater["Fat32Image"](image, 1)
           assert recovery.read_file(updater["BOOT_PATH"]) == efi

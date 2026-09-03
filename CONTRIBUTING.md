@@ -19,7 +19,7 @@ Thanks for helping improve TinyArmOS. Keep changes focused, explain their user-v
 ## Branch and release policy
 
 - Base active development on `nightly`. Every push to that branch is tested and replaces the rolling nightly beta release.
-- Do not push development directly to `main`. Promote `nightly` to `main` only when the project owner explicitly approves a major stable release.
+- Do not push development directly to `main`. Promote `nightly` to `main` only when the project owner explicitly approves a stable release.
 - Create stable version tags only from commits already promoted to `main`.
 
 ## Pull requests

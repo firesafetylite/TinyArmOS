@@ -4,15 +4,22 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-03
+
 ### Added
 
-- A rolling `nightly` beta branch and prerelease pipeline that overwrites one unversioned nightly release on every push while leaving `main` stable until an explicitly approved major release.
+- A rolling `nightly` beta branch and prerelease pipeline that overwrites one unversioned nightly release on every push while leaving `main` stable until an explicitly approved stable release.
 - User-selectable `main` and `nightly` channels in both the in-OS updater and the `tinyarmos` host updater; nightly OS builds display `TinyArmOS nightly` rather than a version number.
 - Separate, checksum-validated GitHub Pages manifests for the main and nightly EFI update channels.
+- Pre-OS `partition add MIB NAME` and `partition name N NAME` commands with mirrored GPT updates, FAT formatting/labels, persistent registration, and hard protection for recovery partition 1.
+- Explicit partition targets for `scan N`, `repair N`, `rollback N`, and `reset N`; `repair N` installs a fresh TinyArmOS filesystem when the target is empty.
+- Arbitrary registered targets in the boot menu, `order N`, `use N`, and `boot N`.
 
 ### Changed
 
 - Split the image into an isolated `TINYRECOV` EFI partition and a separate `TINYARMOS` system/data partition, with a firmware-style boot menu and persistent partition default.
+- Expanded the maintained image from 64 MiB to 128 MiB without moving the original partition extents, leaving aligned unallocated space for additional partitions.
+- Standardized GPT numbering so partition 1 is protected recovery, partition 2 is the initial system, and added partitions are numbered 3 and above.
 - Changed protected `rm -rf /` to require `protect unlock` and empty the entire system partition without touching pre-OS recovery.
 - Deprecated the `.utm.zip` distribution and made `TinyArmOS.img` the sole maintained boot image; builds and releases no longer generate or validate a UTM bundle.
 - Changed host-update auto-discovery to prefer `.img` files while retaining explicit legacy `.utm` targets for migration, and compare EFI digests so same-version nightly builds remain discoverable.
@@ -97,7 +104,8 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 - Enabled ECDHE and protocol-backed entropy for UEFI TLS, with a pinned three-root trust store.
 - Reject malformed release versions and downgrade manifests before downloading an update.
 
-[Unreleased]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.1...v0.1.2

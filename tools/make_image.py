@@ -11,13 +11,14 @@ import zlib
 from pathlib import Path
 
 SECTOR = 512
-IMAGE_BYTES = 64 * 1024 * 1024
+IMAGE_BYTES = 128 * 1024 * 1024
 GPT_ENTRIES = 128
 GPT_ENTRY_BYTES = 128
 GPT_ENTRY_SECTORS = (GPT_ENTRIES * GPT_ENTRY_BYTES) // SECTOR
 RECOVERY_START = 2048
 RECOVERY_SECTORS = 32 * 1024  # 16 MiB FAT16 pre-OS ESP.
 SYSTEM_START = RECOVERY_START + RECOVERY_SECTORS
+SYSTEM_LAST = 131038  # Preserve the original 64 MiB dual-layout extent.
 ESP_TYPE = uuid.UUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
 DISK_GUID = uuid.UUID("117a71a5-e844-4e20-a475-74696e796f73")
 RECOVERY_GUID = uuid.UUID("e056959d-53d4-4c21-9ff4-7265636f7631")
@@ -337,7 +338,7 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
     first_usable = 34
     last_usable = backup_entries_lba - 1
     recovery_last = RECOVERY_START + RECOVERY_SECTORS - 1
-    if SYSTEM_START > last_usable:
+    if SYSTEM_LAST < SYSTEM_START or SYSTEM_LAST > last_usable:
         raise ValueError("disk is too small for the partition layout")
 
     image = bytearray(IMAGE_BYTES)
@@ -362,7 +363,7 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
         ESP_TYPE,
         SYSTEM_GUID,
         SYSTEM_START,
-        last_usable,
+        SYSTEM_LAST,
         "TinyArmOS System",
     )
     entries_crc = zlib.crc32(entries) & 0xFFFFFFFF
@@ -376,7 +377,7 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
     )
 
     format_recovery_fat16(image, efi, startup)
-    format_system_fat32(image, last_usable, freedoom, factory_install)
+    format_system_fat32(image, SYSTEM_LAST, freedoom, factory_install)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(image)

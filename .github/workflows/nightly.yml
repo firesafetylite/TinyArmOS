@@ -60,6 +60,7 @@ jobs:
           assert updater["embedded_channel"](efi) == "nightly"
           assert b"TinyArmOS nightly\narchitecture=ARM64" in efi
           image = Path("build/TinyArmOS.img").read_bytes()
+          assert len(image) == 128 * 1024 * 1024
           recovery = updater["Fat32Image"](image, 0)
           system = updater["Fat32Image"](image, 1)
           assert recovery.read_file(updater["BOOT_PATH"]) == efi

@@ -45,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           test -s build/BOOTAA64.EFI
-          test "$(stat -c '%s' build/TinyArmOS.img)" -eq 67108864
+          test "$(stat -c '%s' build/TinyArmOS.img)" -eq 134217728
           test ! -e build/TinyArmOS.utm
           test ! -e build/TinyArmOS-UTM.img
           file build/BOOTAA64.EFI | grep -Eq 'PE32\+ executable.*Aarch64'
@@ -60,6 +60,8 @@ jobs:
           strings build/BOOTAA64.EFI | grep -Fq 'The pre-OS environment remains and will open at the next boot.'
           strings build/BOOTAA64.EFI | grep -Fq '=== TinyArmOS Pre-OS Environment ==='
           strings build/BOOTAA64.EFI | grep -Fq 'Up/Down select, Enter boot, S save default, R recovery'
+          strings build/BOOTAA64.EFI | grep -Fq 'partition add MIB NAME'
+          strings build/BOOTAA64.EFI | grep -Fq 'repair N         repair or install TinyArmOS'
           ! strings build/BOOTAA64.EFI | grep -Fq 'bootmgr              open'
           ! strings build/BOOTAA64.EFI | grep -Fq 'Recovery Agent'
           ! strings build/BOOTAA64.EFI | grep -Fq 'command: recovery'
