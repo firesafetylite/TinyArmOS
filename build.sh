@@ -2,6 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p build
+# Remove outputs from the retired UTM bundle build so they cannot be mistaken
+# for maintained artifacts after upgrading an existing checkout.
+rm -rf build/TinyArmOS.utm
+rm -f build/TinyArmOS-UTM.img
 
 if command -v zig >/dev/null 2>&1; then
   ZIG=(zig)
@@ -21,23 +25,8 @@ fi
   -Wl,--subsystem=efi_application \
   -o build/BOOTAA64.EFI src/uefi.c
 
-python3 tools/make_utm_image.py build/BOOTAA64.EFI build/TinyArmOS-UTM.img assets/freedoom1.wad
-firmware="${TINYARMOS_UEFI_FIRMWARE:-build/TinyArmOS-QEMU_EFI.fd}"
-variables="${TINYARMOS_UEFI_VARIABLES:-${firmware%.fd}-vars.fd}"
-if [[ -f "$firmware" && -f "$variables" ]]; then
-  python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm "$firmware" "$variables"
-elif [[ -f "$firmware" || -f "$variables" ]]; then
-  echo "Both UEFI code and variable images are required; refusing a partial firmware bundle." >&2
-  exit 1
-elif [[ "${TINYARMOS_REQUIRE_UEFI_FIRMWARE:-0}" == 1 ]]; then
-  echo "The HTTP/TLS-capable UEFI firmware is required for this build." >&2
-  exit 1
-else
-  echo "Warning: custom UEFI firmware is absent; this development bundle cannot use network updates." >&2
-  python3 tools/make_utm_bundle.py build/TinyArmOS-UTM.img build/TinyArmOS.utm
-fi
+python3 tools/make_image.py build/BOOTAA64.EFI build/TinyArmOS.img assets/freedoom1.wad
 
 echo
 echo "Build complete:"
-ls -lh build/BOOTAA64.EFI build/TinyArmOS-UTM.img
-printf 'UTM bundle: %s\n' "build/TinyArmOS.utm"
+ls -lh build/BOOTAA64.EFI build/TinyArmOS.img

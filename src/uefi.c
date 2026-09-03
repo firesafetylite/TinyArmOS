@@ -1305,7 +1305,7 @@ static int fs_restore_system(void) {
     if (drivers >= 0) {
         fs_ensure_file((UINTN)drivers, "graphics.info", "UEFI Graphics Output Protocol\nconsumer=Freedoom\nmode=firmware-native", FS_PROTECTED);
         fs_ensure_file((UINTN)drivers, "input.info", "UEFI Simple Text Input\nkeyboard=polling\nrelease=simulated", FS_PROTECTED);
-        fs_ensure_file((UINTN)drivers, "network.info", "UEFI HTTP/TLS\ntransport=firmware\naddress=IPv4 DHCP\nupdates=GitHub Releases\nrequired=firmware HTTP and CA trust", FS_PROTECTED);
+        fs_ensure_file((UINTN)drivers, "network.info", "UEFI HTTP/TLS\ntransport=firmware\naddress=IPv4 DHCP\nupdate channels=main,nightly beta\nrequired=firmware HTTP and CA trust", FS_PROTECTED);
         fs_ensure_file((UINTN)drivers, "storage.info", "UEFI Simple File System\nvolume=EFI FAT32\nsnapshots=TINYFS0.BIN,TINYFS1.BIN", FS_PROTECTED);
         fs_ensure_file((UINTN)drivers, "timer.info", "ARM generic virtual counter\nclock=monotonic", FS_PROTECTED);
     }
@@ -2265,7 +2265,8 @@ static void command_help(void) {
         "  doom                 launch Freedoom; Q or F12 returns to the shell\n"
         "  settings             open the full-screen persistent settings UI\n"
         "  protect [status|unlock|lock] manage protected-node writes\n"
-        "  update [check]       check for or install a verified GitHub release\n"
+        "  update [check] [main|nightly]\n"
+        "                       select and check/install an update channel\n"
         "  bootmgr              open the TinyArmOS Boot Manager and its help\n"
         "  reboot               save MiniFS and restart TinyArmOS\n"
         "  shutdown             save MiniFS and power off the machine\n"
@@ -2585,8 +2586,15 @@ static void run_command(char *line) {
         command_settings();
     } else if (streq(command, "protect") || starts_with(command, "protect ")) {
         command_protect(command);
-    } else if (streq(command, "update") || streq(command, "update check")) {
-        command_update(streq(command, "update check"));
+    } else if (streq(command, "update") || streq(command, "update main") ||
+               streq(command, "update nightly") || streq(command, "update check") ||
+               streq(command, "update check main") || streq(command, "update check nightly")) {
+        int checkOnly = streq(command, "update check") ||
+                        streq(command, "update check main") ||
+                        streq(command, "update check nightly");
+        int nightly = streq(command, "update nightly") ||
+                      streq(command, "update check nightly");
+        command_update(checkOnly, nightly);
     } else if (streq(command, "bootmgr")) {
         boot_manager_shell();
         settings_load();

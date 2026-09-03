@@ -1,0 +1,178 @@
+name: Nightly
+
+on:
+  push:
+    branches:
+      - nightly
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and publish rolling nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: nightly-release
+      cancel-in-progress: true
+    permissions:
+      contents: write
+    steps:
+      - name: Check out nightly source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Zig toolchain
+        run: |
+          python -m pip install --disable-pip-version-check ziglang==0.14.1
+          python -m ziglang version
+
+      - name: Test
+        run: |
+          python -m unittest discover -s tests -v
+          python tinyarmos --help
+
+      - name: Build image
+        run: make
+
+      - name: Read and validate build version
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 - <<'PY'
+          import runpy
+          from pathlib import Path
+
+          updater = runpy.run_path("tinyarmos", run_name="nightly_validation")
+          efi = Path("build/BOOTAA64.EFI").read_bytes()
+          version = updater["validate_efi"](efi)
+          image = Path("build/TinyArmOS.img").read_bytes()
+          disk = updater["Fat32Image"](image)
+          assert disk.read_file(updater["BOOT_PATH"]) == efi
+          assert disk.read_file((b"DOOMU   WAD",)).startswith(b"IWAD")
+          print(version)
+          PY
+          )"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Package nightly assets
+        env:
+          VERSION: ${{ steps.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          efi_name="TinyArmOS-v${VERSION}-nightly-BOOTAA64.EFI"
+          mkdir -p dist
+          cp build/BOOTAA64.EFI "dist/${efi_name}"
+          cp build/TinyArmOS.img "dist/TinyArmOS-v${VERSION}-nightly.img"
+          cp tinyarmos dist/tinyarmos
+          chmod +x dist/tinyarmos
+          zip -9 "dist/TinyArmOS-nightly-LICENSES.zip" \
+            LICENSE THIRD_PARTY_NOTICES.md \
+            firmware/licenses/EDK2-LICENSE.txt \
+            firmware/licenses/LIBFDT-LICENSE.txt \
+            firmware/licenses/OPENSSL-LICENSE.txt \
+            third_party/PureDOOM/LICENSE \
+            assets/FREEDOOM-COPYING.txt \
+            assets/FREEDOOM-CREDITS.txt \
+            assets/FREEDOOM-CREDITS-MUSIC.txt \
+            assets/FREEDOOM-README.html
+          efi_size="$(stat -c '%s' "dist/${efi_name}")"
+          efi_sha256="$(sha256sum "dist/${efi_name}" | cut -d ' ' -f 1)"
+          cat > dist/TinyArmOS-nightly-update.txt <<EOF
+          version=${VERSION}
+          size=${efi_size}
+          sha256=${efi_sha256}
+          url=https://firesafetylite.github.io/TinyArmOS/nightly/TinyArmOS-latest-BOOTAA64.EFI
+          EOF
+          (
+            cd dist
+            test "$(grep -c '^' TinyArmOS-nightly-update.txt)" -eq 4
+            sha256sum TinyArmOS-* tinyarmos > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Create or replace rolling nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag --force nightly "$GITHUB_SHA"
+          git push origin refs/tags/nightly --force
+          if gh release view nightly >/dev/null 2>&1; then
+            while IFS= read -r asset; do
+              [[ -z "$asset" ]] || gh release delete-asset nightly "$asset" --yes
+            done < <(gh release view nightly --json assets --jq '.assets[].name')
+            gh release edit nightly \
+              --title "TinyArmOS v${VERSION} nightly" \
+              --notes "Rolling beta build from the nightly branch at ${GITHUB_SHA}." \
+              --prerelease
+            gh release upload nightly dist/* --clobber
+          else
+            gh release create nightly dist/* \
+              --verify-tag \
+              --title "TinyArmOS v${VERSION} nightly" \
+              --notes "Rolling beta build from the nightly branch at ${GITHUB_SHA}." \
+              --prerelease
+          fi
+
+  pages:
+    name: Publish main and nightly update channels
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: github-pages
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out channel publisher
+        uses: actions/checkout@v7
+
+      - name: Download and validate both channels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          main_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          mkdir -p release-main release-nightly
+          gh release download "$main_tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'TinyArmOS-update.txt' \
+            --pattern 'TinyArmOS-v*-BOOTAA64.EFI' \
+            --dir release-main
+          gh release download nightly --repo "$GITHUB_REPOSITORY" \
+            --pattern 'TinyArmOS-nightly-update.txt' \
+            --pattern 'TinyArmOS-v*-nightly-BOOTAA64.EFI' \
+            --dir release-nightly
+          python3 tools/make_update_site.py \
+            --main release-main --nightly release-nightly --output public
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload update channels
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: public
+
+      - name: Deploy update channels
+        id: deployment
+        uses: actions/deploy-pages@v4

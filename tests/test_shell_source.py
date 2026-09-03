@@ -6,7 +6,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / "src" / "uefi.c").read_text(encoding="utf-8")
+UPDATE_SOURCE = (ROOT / "src" / "update.inc").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
+BUILD_SCRIPT = (ROOT / "build.sh").read_text(encoding="utf-8")
+RELEASE_WORKFLOW = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+    encoding="utf-8"
+)
+NIGHTLY_WORKFLOW = (ROOT / ".github" / "workflows" / "nightly.yml").read_text(
+    encoding="utf-8"
+)
+PAGES_WORKFLOW = (ROOT / ".github" / "workflows" / "pages.yml").read_text(
+    encoding="utf-8"
+)
 
 
 def source_block(start: str, end: str) -> str:
@@ -60,7 +71,7 @@ class ShellSourceTests(unittest.TestCase):
             "doom",
             "settings",
             "protect [status|unlock|lock]",
-            "update [check]",
+            "update [check] [main|nightly]",
             "bootmgr",
             "reboot",
             "shutdown",
@@ -299,6 +310,46 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("gST->ConOut->ClearScreen", settings_ui)
         self.assertIn("settings_save_notice()", settings_ui)
         self.assertNotIn("Save and exit", settings_ui)
+
+    def test_update_command_routes_main_and_nightly_channels(self) -> None:
+        dispatch = source_block(
+            "static void run_command(char *line)", "__attribute__((used))"
+        )
+        for command in (
+            "update main",
+            "update nightly",
+            "update check main",
+            "update check nightly",
+        ):
+            with self.subTest(command=command):
+                self.assertIn(f'streq(command, "{command}")', dispatch)
+        self.assertIn("command_update(checkOnly, nightly);", dispatch)
+        self.assertIn("UPDATE_MAIN_MANIFEST_URL", UPDATE_SOURCE)
+        self.assertIn("UPDATE_NIGHTLY_MANIFEST_URL", UPDATE_SOURCE)
+        self.assertIn("nightly/TinyArmOS-update.txt", UPDATE_SOURCE)
+        self.assertIn("update_digest_equal(currentDigest, manifest.digest)", UPDATE_SOURCE)
+
+    def test_nightly_pipeline_keeps_main_and_beta_channels_separate(self) -> None:
+        self.assertIn("branches:\n      - nightly", NIGHTLY_WORKFLOW)
+        self.assertIn("gh release create nightly", NIGHTLY_WORKFLOW)
+        self.assertIn("TinyArmOS-v${VERSION}-nightly.img", NIGHTLY_WORKFLOW)
+        self.assertIn("--prerelease", NIGHTLY_WORKFLOW)
+        self.assertIn("git merge-base --is-ancestor", RELEASE_WORKFLOW)
+        self.assertIn("TinyArmOS-nightly-update.txt", PAGES_WORKFLOW)
+        self.assertIn("--main release-main --nightly release-nightly", PAGES_WORKFLOW)
+
+    def test_img_is_the_only_maintained_boot_distribution(self) -> None:
+        self.assertIn(
+            "tools/make_image.py build/BOOTAA64.EFI build/TinyArmOS.img",
+            BUILD_SCRIPT,
+        )
+        self.assertNotIn("make_utm_bundle.py", BUILD_SCRIPT)
+        self.assertIn(
+            'cp build/TinyArmOS.img "dist/TinyArmOS-${tag}.img"',
+            RELEASE_WORKFLOW,
+        )
+        self.assertNotIn("UTM.utm.zip", RELEASE_WORKFLOW)
+        self.assertFalse((ROOT / "tools" / "make_utm_bundle.py").exists())
 
     def test_readme_keeps_user_disclaimer(self) -> None:
         self.assertIn(

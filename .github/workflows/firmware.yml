@@ -1,4 +1,4 @@
-name: Build UTM firmware
+name: Build optional UEFI firmware
 
 on:
   workflow_dispatch:
@@ -45,7 +45,7 @@ jobs:
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TinyArmOS-UTM-firmware
+          name: TinyArmOS-UEFI-firmware
           path: |
             build/TinyArmOS-QEMU_EFI.fd
             build/TinyArmOS-QEMU_EFI-vars.fd

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """TinyArmOS host command.
 
-The guest has no network stack. ``tinyarmos update`` uses the host's HTTPS
-support to fetch a GitHub Release and replaces only EFI/BOOT/BOOTAA64.EFI in
-the TinyArmOS disk, preserving MiniFS snapshots and other files.
+``tinyarmos update`` uses the host's HTTPS support to fetch the selected main
+or nightly GitHub release and replaces only EFI/BOOT/BOOTAA64.EFI in a
+TinyArmOS disk image, preserving MiniFS snapshots and other files. Legacy UTM
+bundles remain explicit targets.
 """
 
 from __future__ import annotations
@@ -26,7 +27,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 REPOSITORY = "firesafetylite/TinyArmOS"
-LATEST_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+MAIN_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+NIGHTLY_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/tags/nightly"
 USER_AGENT = "TinyArmOS-Host-Updater/0.1.4"
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_EFI_BYTES = 16 * 1024 * 1024
@@ -37,6 +39,10 @@ VERSION_RE = re.compile(
 VERSION_MARKER_RE = re.compile(
     rb"TinyArmOS ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     rb"(?:\.(?:0|[1-9][0-9]*))?)\narchitecture=ARM64\nfirmware=UEFI"
+)
+NIGHTLY_EFI_RE = re.compile(
+    r"TinyArmOS-v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:\.(?:0|[1-9][0-9]*))?)-nightly-BOOTAA64\.EFI"
 )
 BOOT_PATH = (b"EFI        ", b"BOOT       ", b"BOOTAA64EFI")
 
@@ -124,20 +130,20 @@ def https_get(url: str, limit: int, accept: str) -> bytes:
     return data
 
 
-def release_assets() -> Tuple[str, Dict[str, dict]]:
-    raw = https_get(LATEST_RELEASE_URL, MAX_METADATA_BYTES, "application/vnd.github+json")
+def release_assets(channel: str) -> Tuple[str, Dict[str, dict], str]:
+    if channel not in {"main", "nightly"}:
+        raise UpdateError(f"unknown update channel: {channel}")
+    release_url = MAIN_RELEASE_URL if channel == "main" else NIGHTLY_RELEASE_URL
+    raw = https_get(release_url, MAX_METADATA_BYTES, "application/vnd.github+json")
     try:
         release = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise UpdateError("GitHub returned invalid release metadata") from error
     if not isinstance(release, dict) or release.get("draft") is True:
-        raise UpdateError("GitHub returned an invalid latest release")
+        raise UpdateError(f"GitHub returned invalid {channel} release metadata")
     tag = release.get("tag_name")
-    if not isinstance(tag, str) or not tag.startswith("v"):
-        raise UpdateError("the latest GitHub Release has no valid version tag")
-    version = tag[1:]
-    version_tuple(version)
-    expected_efi = f"TinyArmOS-{tag}-BOOTAA64.EFI"
+    if not isinstance(tag, str):
+        raise UpdateError(f"the {channel} GitHub Release has no valid tag")
     assets: Dict[str, dict] = {}
     for asset in release.get("assets", []):
         if not isinstance(asset, dict):
@@ -151,12 +157,30 @@ def release_assets() -> Tuple[str, Dict[str, dict]]:
         if parsed.scheme != "https" or parsed.hostname != "github.com":
             continue
         assets[name] = asset
+    if channel == "main":
+        if not tag.startswith("v"):
+            raise UpdateError("the main GitHub Release has no valid version tag")
+        version = tag[1:]
+        version_tuple(version)
+        expected_efi = f"TinyArmOS-{tag}-BOOTAA64.EFI"
+    else:
+        if tag != "nightly" or release.get("prerelease") is not True:
+            raise UpdateError("the nightly GitHub Release is not a valid prerelease")
+        nightly_assets = [
+            (match.group(1), name)
+            for name in assets
+            if (match := NIGHTLY_EFI_RE.fullmatch(name)) is not None
+        ]
+        if len(nightly_assets) != 1:
+            raise UpdateError("nightly GitHub Release must contain exactly one EFI build")
+        version, expected_efi = nightly_assets[0]
+        version_tuple(version)
     for required in (expected_efi, "SHA256SUMS"):
         if required not in assets:
-            raise UpdateError(f"latest GitHub Release is missing {required}")
+            raise UpdateError(f"{channel} GitHub Release is missing {required}")
     if not 512 <= assets[expected_efi]["size"] <= MAX_EFI_BYTES:
-        raise UpdateError("latest EFI release asset has an invalid size")
-    return version, assets
+        raise UpdateError(f"{channel} EFI release asset has an invalid size")
+    return version, assets, expected_efi
 
 
 def checksum_for(text: bytes, filename: str) -> str:
@@ -372,17 +396,20 @@ def target_disk(path: Path) -> Tuple[str, Path]:
         return "disk", path
     if path.is_file() and path.suffix.lower() == ".efi":
         return "efi", path
-    raise UpdateError("target must be a TinyArmOS .utm bundle, .img disk, or .EFI file")
+    raise UpdateError(
+        "target must be a TinyArmOS .img disk, legacy .utm bundle, or .EFI file"
+    )
 
 
 def discover_target() -> Path:
     candidates: List[Path] = []
-    search_roots = [Path.cwd(), Path(__file__).resolve().parent]
-    build_bundle = Path(__file__).resolve().parent / "build" / "TinyArmOS.utm"
-    if build_bundle.is_dir():
-        candidates.append(build_bundle)
+    source_root = Path(__file__).resolve().parent
+    search_roots = [Path.cwd(), source_root]
+    build_image = source_root / "build" / "TinyArmOS.img"
+    if build_image.is_file():
+        candidates.append(build_image)
     for root in search_roots:
-        candidates.extend(sorted(root.glob("*.utm")))
+        candidates.extend(sorted(root.glob("TinyArmOS*.img")))
     unique = []
     seen = set()
     for candidate in candidates:
@@ -393,8 +420,8 @@ def discover_target() -> Path:
     if len(unique) == 1:
         return unique[0]
     if not unique:
-        raise UpdateError("no TinyArmOS .utm bundle found; pass its path after 'update'")
-    raise UpdateError("multiple .utm bundles found; pass the one to update explicitly")
+        raise UpdateError("no TinyArmOS .img file found; pass its path after 'update'")
+    raise UpdateError("multiple .img files found; pass the one to update explicitly")
 
 
 def read_installed_image(kind: str, path: Path) -> bytes:
@@ -481,31 +508,36 @@ def install_image(kind: str, target: Path, image: bytes) -> Path:
 
 def update_command(args: argparse.Namespace) -> int:
     requested_target = Path(args.target) if args.target else discover_target()
+    if requested_target.suffix.lower() == ".utm":
+        print(
+            "tinyarmos: warning: .utm bundles are deprecated; new releases use .img files",
+            file=sys.stderr,
+        )
     kind, target = target_disk(requested_target)
     current_image = read_installed_image(kind, target)
     current_version = validate_efi(current_image)
     print(f"Installed TinyArmOS: {current_version}")
-    print("Checking the latest GitHub Release...")
-    latest_version, assets = release_assets()
-    print(f"Latest TinyArmOS:    {latest_version}")
-    comparison = (version_tuple(latest_version) > version_tuple(current_version)) - (
-        version_tuple(latest_version) < version_tuple(current_version)
-    )
-    if comparison == 0:
-        print("TinyArmOS is already up to date.")
-        return 0
-    if comparison < 0:
-        raise UpdateError("latest GitHub Release is older; refusing to downgrade")
-    if args.check:
-        print("An update is available.")
-        return 0
-    tag = f"v{latest_version}"
-    efi_name = f"TinyArmOS-{tag}-BOOTAA64.EFI"
+    print(f"Checking the {args.channel} GitHub update channel...")
+    latest_version, assets, efi_name = release_assets(args.channel)
+    print(f"Latest {args.channel} build: {latest_version}")
     checksum_asset = assets["SHA256SUMS"]
     checksum_text = https_get(
         checksum_asset["browser_download_url"], MAX_METADATA_BYTES, "application/octet-stream"
     )
     expected_digest = checksum_for(checksum_text, efi_name)
+    comparison = (version_tuple(latest_version) > version_tuple(current_version)) - (
+        version_tuple(latest_version) < version_tuple(current_version)
+    )
+    if comparison == 0 and hashlib.sha256(current_image).hexdigest() == expected_digest:
+        print("TinyArmOS is already up to date on the selected channel.")
+        return 0
+    if comparison < 0:
+        raise UpdateError("selected update channel is older; refusing to downgrade")
+    if comparison == 0:
+        print("The selected channel has a different build of this version.")
+    if args.check:
+        print(f"An update is available from the {args.channel} channel.")
+        return 0
     efi_asset = assets[efi_name]
     print(f"Downloading {efi_name}...")
     image = https_get(
@@ -521,14 +553,17 @@ def update_command(args: argparse.Namespace) -> int:
     if not args.yes:
         if not sys.stdin.isatty():
             raise UpdateError("confirmation required; rerun with --yes in a non-interactive shell")
-        answer = input(f"Update {requested_target} to TinyArmOS {latest_version}? [y/N] ")
+        answer = input(
+            f"Update {requested_target} to TinyArmOS {latest_version} "
+            f"from {args.channel}? [y/N] "
+        )
         if answer.strip().lower() not in ("y", "yes"):
             print("Update cancelled.")
             return 0
     backup = install_image(kind, target, image)
     installed = read_installed_image(kind, target)
     validate_efi(installed, latest_version)
-    print(f"Updated TinyArmOS to {latest_version}.")
+    print(f"Updated TinyArmOS to {latest_version} from {args.channel}.")
     print(f"Backup: {backup}")
     print("Start the VM normally. Delete the .bak file after confirming it boots.")
     return 0
@@ -537,16 +572,25 @@ def update_command(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tinyarmos",
-        description="Manage TinyArmOS from the host without guest networking.",
+        description="Manage TinyArmOS disk images from the host.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     update = subparsers.add_parser(
-        "update", help="update a TinyArmOS UTM bundle or disk from GitHub Releases"
+        "update", help="update a TinyArmOS disk image from GitHub Releases"
     )
     update.add_argument(
         "target",
         nargs="?",
-        help="TinyArmOS .utm bundle, .img disk, or BOOTAA64.EFI (auto-detected when omitted)",
+        help=(
+            "TinyArmOS .img disk, legacy .utm bundle, or BOOTAA64.EFI "
+            "(an .img is auto-detected when omitted)"
+        ),
+    )
+    update.add_argument(
+        "--channel",
+        choices=("main", "nightly"),
+        default="main",
+        help="update channel to use (default: main)",
     )
     update.add_argument(
         "--check", action="store_true", help="check whether an update exists without installing"

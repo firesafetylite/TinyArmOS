@@ -1,7 +1,10 @@
 // TinyArmOS firmware-backed HTTPS updater.
 // Uses UEFI HTTP/TLS services supplied by the VM firmware.
 
-#define UPDATE_MANIFEST_URL "https://firesafetylite.github.io/TinyArmOS/TinyArmOS-update.txt"
+#define UPDATE_MAIN_MANIFEST_URL "https://firesafetylite.github.io/TinyArmOS/TinyArmOS-update.txt"
+#define UPDATE_NIGHTLY_MANIFEST_URL "https://firesafetylite.github.io/TinyArmOS/nightly/TinyArmOS-update.txt"
+#define UPDATE_MAIN_IMAGE_URL "https://firesafetylite.github.io/TinyArmOS/TinyArmOS-latest-BOOTAA64.EFI"
+#define UPDATE_NIGHTLY_IMAGE_URL "https://firesafetylite.github.io/TinyArmOS/nightly/TinyArmOS-latest-BOOTAA64.EFI"
 #define UPDATE_MAX_MANIFEST_BYTES 4096U
 #define UPDATE_MAX_IMAGE_BYTES (8U * 1024U * 1024U)
 #define UPDATE_MAX_URL_BYTES 4096U
@@ -827,7 +830,8 @@ static EFI_STATUS update_http_fetch(const char *url, UINT8 *buffer, UINTN capaci
     return status;
 }
 
-static int update_parse_manifest(char *text, UINTN bytes, UPDATE_MANIFEST *manifest) {
+static int update_parse_manifest(char *text, UINTN bytes, const char *expectedImageUrl,
+    UPDATE_MANIFEST *manifest) {
     char *cursor = text;
     UINT32 versionParts[3];
     int haveVersion = 0;
@@ -864,8 +868,7 @@ static int update_parse_manifest(char *text, UINTN bytes, UPDATE_MANIFEST *manif
             if (haveDigest || !update_parse_digest(equals, manifest->digest)) return 0;
             haveDigest = 1;
         } else if (streq(line, "url")) {
-            if (haveUrl || !update_https_url(equals) ||
-                !streq(equals, "https://firesafetylite.github.io/TinyArmOS/TinyArmOS-latest-BOOTAA64.EFI") ||
+            if (haveUrl || !update_https_url(equals) || !streq(equals, expectedImageUrl) ||
                 !update_copy(manifest->url, equals, sizeof(manifest->url))) return 0;
             haveUrl = 1;
         } else return 0;
@@ -1031,7 +1034,10 @@ static void update_print_status(const char *operation, EFI_STATUS status) {
     }
 }
 
-static void command_update(int checkOnly) {
+static void command_update(int checkOnly, int nightly) {
+    const char *channelName = nightly ? "nightly beta" : "main";
+    const char *manifestUrl = nightly ? UPDATE_NIGHTLY_MANIFEST_URL : UPDATE_MAIN_MANIFEST_URL;
+    const char *imageUrl = nightly ? UPDATE_NIGHTLY_IMAGE_URL : UPDATE_MAIN_IMAGE_URL;
     UINT8 *manifestBytes = (UINT8 *)0;
     UINT8 *image = (UINT8 *)0;
     UINTN manifestSize = 0;
@@ -1040,22 +1046,26 @@ static void command_update(int checkOnly) {
     UPDATE_MANIFEST manifest;
     EFI_STATUS status;
     char answer[32];
-    print("Checking GitHub Releases over firmware HTTPS...\n");
+    print("Checking the ");
+    print(channelName);
+    print(" update channel over firmware HTTPS...\n");
     status = gST->BootServices->AllocatePool(2, UPDATE_MAX_MANIFEST_BYTES + 1U, (void **)&manifestBytes);
     if (status != EFI_SUCCESS || !manifestBytes) {
         update_print_status("Manifest allocation", EFI_OUT_OF_RESOURCES);
         return;
     }
-    status = update_http_fetch(UPDATE_MANIFEST_URL, manifestBytes, UPDATE_MAX_MANIFEST_BYTES, &manifestSize);
+    status = update_http_fetch(manifestUrl, manifestBytes, UPDATE_MAX_MANIFEST_BYTES, &manifestSize);
     if (status != EFI_SUCCESS) {
         update_print_status("Update check", status);
         goto cleanup;
     }
-    if (!update_parse_manifest((char *)manifestBytes, manifestSize, &manifest)) {
+    if (!update_parse_manifest((char *)manifestBytes, manifestSize, imageUrl, &manifest)) {
         update_print_status("Manifest validation", EFI_SECURITY_VIOLATION);
         goto cleanup;
     }
-    print("Latest release: ");
+    print("Latest ");
+    print(channelName);
+    print(" build: ");
     print(manifest.version);
     print(" (current ");
     print(TINYARMOS_VERSION);
@@ -1063,8 +1073,19 @@ static void command_update(int checkOnly) {
     {
         int versionOrder = update_compare_versions(manifest.version, TINYARMOS_VERSION);
         if (versionOrder == 0) {
-            print("TinyArmOS is up to date.\n");
-            goto cleanup;
+            UINTN currentSize = 0;
+            UINT8 currentDigest[32];
+            status = update_hash_file(gUpdateBootPath, &currentSize, currentDigest);
+            if (status != EFI_SUCCESS) {
+                update_print_status("Installed image verification", status);
+                goto cleanup;
+            }
+            if (currentSize == manifest.size &&
+                update_digest_equal(currentDigest, manifest.digest)) {
+                print("TinyArmOS is up to date on the selected channel.\n");
+                goto cleanup;
+            }
+            print("The selected channel has a different build of this version.\n");
         }
         if (versionOrder < 0) {
             print("The update channel is older; refusing a rollback.\n");
@@ -1072,7 +1093,9 @@ static void command_update(int checkOnly) {
         }
     }
     if (checkOnly) {
-        print("Update available. Run 'update' to install it.\n");
+        print("Update available. Run '");
+        print(nightly ? "update nightly" : "update main");
+        print("' to install it.\n");
         goto cleanup;
     }
     print("Download and install this update? Type UPDATE: ");

@@ -31,7 +31,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Download and verify release update assets
+      - name: Check out channel publisher
+        uses: actions/checkout@v7
+
+      - name: Download and verify main and nightly assets
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_TAG: ${{ inputs.tag }}
@@ -43,65 +46,22 @@ jobs:
           if [[ -z "$tag" ]]; then
             tag="$latest_tag"
           elif [[ "$tag" != "$latest_tag" ]]; then
-            echo "Refusing to publish non-latest release $tag (latest is $latest_tag)." >&2
+            echo "Refusing to publish non-latest main release $tag (latest is $latest_tag)." >&2
             exit 1
           fi
-          mkdir -p release public
+          mkdir -p release-main release-nightly
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
             --pattern 'TinyArmOS-update.txt' \
-            --pattern 'TinyArmOS-*-BOOTAA64.EFI' \
-            --dir release
-          python3 - "$tag" <<'PY'
-          import hashlib
-          import re
-          import sys
-          from pathlib import Path
-
-          tag = sys.argv[1]
-          manifest_path = Path("release/TinyArmOS-update.txt")
-          binaries = list(Path("release").glob("TinyArmOS-*-BOOTAA64.EFI"))
-          if len(binaries) != 1:
-              raise SystemExit(f"expected one EFI asset, found {len(binaries)}")
-          binary = binaries[0]
-          entries = {}
-          for line in manifest_path.read_text(encoding="ascii").splitlines():
-              if not re.fullmatch(r"[a-z0-9]+=[ -~]+", line):
-                  raise SystemExit("release manifest has invalid syntax")
-              key, value = line.split("=", 1)
-              if key in entries:
-                  raise SystemExit(f"duplicate release manifest key: {key}")
-              entries[key] = value
-          if set(entries) != {"version", "size", "sha256", "url"}:
-              raise SystemExit("release manifest has unexpected fields")
-          data = binary.read_bytes()
-          digest = hashlib.sha256(data).hexdigest()
-          if entries["version"] != tag.removeprefix("v"):
-              raise SystemExit("release manifest version does not match tag")
-          if entries["size"] != str(len(data)) or entries["sha256"] != digest:
-              raise SystemExit("release manifest does not match EFI asset")
-          if len(data) < 0x40 or data[:2] != b"MZ":
-              raise SystemExit("EFI asset is not a PE image")
-          pe_offset = int.from_bytes(data[0x3c:0x40], "little")
-          if data[pe_offset:pe_offset + 6] != b"PE\0\0\x64\xaa":
-              raise SystemExit("EFI asset is not an ARM64 PE image")
-          output_binary = Path("public/TinyArmOS-latest-BOOTAA64.EFI")
-          output_binary.write_bytes(data)
-          Path("public/TinyArmOS-update.txt").write_text(
-              f"version={entries['version']}\n"
-              f"size={len(data)}\n"
-              f"sha256={digest}\n"
-              "url=https://firesafetylite.github.io/TinyArmOS/"
-              "TinyArmOS-latest-BOOTAA64.EFI\n",
-              encoding="ascii",
-          )
-          PY
-          cat > public/index.html <<'EOF'
-          <!doctype html>
-          <meta charset="utf-8">
-          <title>TinyArmOS update channel</title>
-          <h1>TinyArmOS update channel</h1>
-          <p><a href="TinyArmOS-update.txt">Manifest</a></p>
-          EOF
+            --pattern 'TinyArmOS-v*-BOOTAA64.EFI' \
+            --dir release-main
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download nightly --repo "$GITHUB_REPOSITORY" \
+              --pattern 'TinyArmOS-nightly-update.txt' \
+              --pattern 'TinyArmOS-v*-nightly-BOOTAA64.EFI' \
+              --dir release-nightly
+          fi
+          python3 tools/make_update_site.py \
+            --main release-main --nightly release-nightly --output public
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

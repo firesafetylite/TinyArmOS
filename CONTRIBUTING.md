@@ -13,8 +13,14 @@ Thanks for helping improve TinyArmOS. Keep changes focused, explain their user-v
    PATH="/tmp/tinyarmos-venv/bin:$PATH" make
    ```
 
-3. Confirm that `build/BOOTAA64.EFI`, `build/TinyArmOS-UTM.img`, and `build/TinyArmOS.utm/` were produced. When possible, boot the bundle in UTM and describe what you exercised.
+3. Confirm that `build/BOOTAA64.EFI` and `build/TinyArmOS.img` were produced. When possible, attach the image to an ARM64 UEFI VM, boot it, and describe what you exercised.
 4. Run `make clean` after local testing; build outputs are deliberately ignored.
+
+## Branch and release policy
+
+- Base active development on `nightly`. Every push to that branch is tested and replaces the rolling nightly beta release.
+- Do not push development directly to `main`. Promote `nightly` to `main` only when the project owner explicitly approves a major stable release.
+- Create stable version tags only from commits already promoted to `main`.
 
 ## Pull requests
 

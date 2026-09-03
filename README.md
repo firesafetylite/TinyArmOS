@@ -3,17 +3,25 @@
 
 # TinyArmOS v0.1.4
 
-[![CI](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml/badge.svg)](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml)
+[![Main CI](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml)
+[![Nightly](https://github.com/firesafetylite/TinyArmOS/actions/workflows/nightly.yml/badge.svg?branch=nightly)](https://github.com/firesafetylite/TinyArmOS/actions/workflows/nightly.yml)
 [![Release](https://img.shields.io/github/v/release/firesafetylite/TinyArmOS?display_name=tag)](https://github.com/firesafetylite/TinyArmOS/releases/latest)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 
 TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a persistent hierarchical MiniFS2 filesystem, verified startup, an integrated TinyArmOS Boot Manager, protected system nodes, persistent shell settings, in-OS GitHub updates, a host update fallback, and native Freedoom. It is built from scratch and is not based on Unix or Linux.
 
-## Download and run in UTM
+## Download and run
 
-For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.1.4-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, custom UEFI firmware, 256 MiB RAM, VirtIO networking and RNG, and a graphical console. UTM on Apple silicon is the primary run environment. The archive also contains the `tinyarmos` host command as an update fallback.
+Open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest) and download its `.img` asset. New releases name it `TinyArmOS-vVERSION.img`; older releases may use `-UTM.img`. This 64 MiB GPT/FAT32 disk image is the sole maintained boot distribution. The former `.utm.zip` bundle is deprecated and is no longer generated. Release EFI and manifest files remain machine-facing update infrastructure rather than separate supported boot distributions. Verify downloads with `SHA256SUMS`.
 
-The release also provides `TinyArmOS-v0.1.4-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.1.4-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
+To use the image with UTM on Apple silicon, create an emulated ARM64 **Other** virtual machine with UEFI boot and at least 256 MiB RAM, import the `.img` as a non-removable VirtIO drive, and use Shared Network with a `virtio-net-pci` adapter if networking is needed. Then start the VM; ARM64 UEFI discovers `EFI/BOOT/BOOTAA64.EFI` automatically.
+
+## Release channels
+
+- **Nightly beta:** active development lives on the [`nightly`](https://github.com/firesafetylite/TinyArmOS/tree/nightly) branch. Every push replaces the rolling [nightly prerelease](https://github.com/firesafetylite/TinyArmOS/releases/tag/nightly) and its versioned `.img` build.
+- **Main:** `main` is the stable line. Nightly changes are promoted to `main` only with explicit project-owner approval for a major release; version tags on `main` publish stable releases.
+
+The update commands default to `main`, so users must deliberately opt into the nightly beta channel.
 
 The disk image's FAT32 EFI System Partition contains:
 
@@ -211,7 +219,7 @@ uptime
 count
 settings
 protect [status|unlock|lock]
-update [check]
+update [check] [main|nightly]
 bootmgr
 reboot
 shutdown
@@ -219,22 +227,28 @@ shutdown
 
 ## Updates
 
-From the TinyArmOS shell, run:
+From the TinyArmOS shell, choose the stable or beta channel:
 
 ```text
-update check   check the latest GitHub Release
-update         download, verify, and install it
+update check              check the main channel (default)
+update main               install from the main channel
+update check nightly      check the rolling nightly beta
+update nightly            install from the rolling nightly beta
 ```
 
-The in-OS updater uses the bundled firmware's UEFI HTTP/TLS service with IPv4 DHCP and automatically continues through the UTM Shared Network fallback when DHCP times out. It reads the redirect-free GitHub Pages update channel, validates a strict manifest and SHA-256 checksum, confirms the download is an ARM64 EFI application, rejects rollback versions, and keeps `EFI/BOOT/BOOTAA64.BAK` as a recovery copy. Reboot after installation.
+The updater compares both the version and EFI digest, so a newer nightly build can be detected even when its version number has not changed. It refuses channel changes that would downgrade the installed version.
 
-If the VM cannot reach the update channel, shut it down and use the included host fallback:
+The in-OS updater requires VM firmware that exposes UEFI HTTP/TLS. That firmware is platform hardware and is not contained in the maintained disk image; stock VM firmware may therefore report that the service is unavailable. When available, the updater uses IPv4 DHCP and automatically continues through the UTM Shared Network fallback, validates the redirect-free GitHub Pages manifest and SHA-256 checksum, confirms the download is an ARM64 EFI application, rejects rollback versions, and keeps `EFI/BOOT/BOOTAA64.BAK` as a recovery copy. Reboot after installation.
+
+For the supported image-only fallback, shut down the VM, download the `tinyarmos` host command from the release, and run:
 
 ```bash
-./tinyarmos update TinyArmOS-v0.1.4.utm
+chmod +x tinyarmos
+./tinyarmos update --channel main /path/to/TinyArmOS.img
+./tinyarmos update --channel nightly /path/to/TinyArmOS.img  # opt-in beta
 ```
 
-The host command uses the host's maintained HTTPS stack and updates only `EFI/BOOT/BOOTAA64.EFI`, preserving MiniFS snapshots, user files, and Freedoom. Keep the VM stopped while using it.
+The host command uses the host's maintained HTTPS stack and updates only `EFI/BOOT/BOOTAA64.EFI`, preserving MiniFS snapshots, user files, and Freedoom. Keep the image detached from running virtual machines while updating it. Explicit updates of historical `.utm` bundles remain supported for migration, but no new bundle is produced.
 
 ## Build from source
 
@@ -246,9 +260,11 @@ python3 -m venv /tmp/tinyarmos-venv
 PATH="/tmp/tinyarmos-venv/bin:$PATH" make
 ```
 
-Alternatively, install Zig 0.14.1 directly and run `make`. `build.sh` compiles the ARM64 EFI executable, embeds Freedoom in a 64 MiB GPT/FAT32 disk, and generates `build/BOOTAA64.EFI`, `build/TinyArmOS-UTM.img`, and `build/TinyArmOS.utm`. The image builder, bundle builder, and host update command use only Python's standard library.
+Alternatively, install Zig 0.14.1 directly and run `make`. `build.sh` compiles the ARM64 EFI executable, embeds Freedoom in a 64 MiB GPT/FAT32 disk, and generates `build/BOOTAA64.EFI` plus the canonical `build/TinyArmOS.img`. The image builder and host update command use only Python's standard library.
 
-CI checks that the EFI output is an AArch64 PE32+ application, validates the GPT/FAT32 signatures and UTM configuration, and confirms that the standalone and bundled disk images match. These structural checks do not replace a firmware boot test; when changing boot or runtime behavior, also test the generated bundle in UTM when practical.
+CI checks that the EFI output is an AArch64 PE32+ application, validates the GPT/FAT32 image, and confirms that the image contains the exact built EFI executable and Freedoom data. These structural checks do not replace a firmware boot test; when changing boot or runtime behavior, also attach the generated image to an ARM64 UEFI VM and test it when practical.
+
+The optional `tools/build_uefi_firmware.sh` workflow remains available to developers testing the in-OS HTTP/TLS updater. Its custom pflash files are not part of the maintained image distribution, and the project no longer generates a UTM configuration bundle.
 
 Use `make clean` to remove generated output. Everything under `build/` is intentionally ignored by Git.
 
@@ -256,4 +272,4 @@ Use `make clean` to remove generated output. Everything under `build/` is intent
 
 Copyright © 2026 firesafetylite. TinyArmOS as an integrated work is licensed under the [GNU General Public License version 2 only](LICENSE) (`GPL-2.0-only`) because it incorporates PureDOOM.
 
-PureDOOM is distributed under GPL-2.0, Freedoom 0.13.0 assets are distributed under the BSD 3-Clause license, EDK2 firmware is BSD-2-Clause-Patent, linked libfdt code is BSD-2-Clause, and linked OpenSSL code is Apache-2.0. Original license and attribution files are preserved under `third_party/PureDOOM/`, `assets/`, and `firmware/licenses/`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
+PureDOOM is distributed under GPL-2.0 and Freedoom 0.13.0 assets are distributed under the BSD 3-Clause license. The optional developer firmware builder uses EDK2 under BSD-2-Clause-Patent, libfdt under BSD-2-Clause, and OpenSSL under Apache-2.0; those firmware components are not included in `TinyArmOS.img`. Original license and attribution files are preserved under `third_party/PureDOOM/`, `assets/`, and `firmware/licenses/`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.

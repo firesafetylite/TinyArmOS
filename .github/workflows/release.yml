@@ -22,6 +22,18 @@ jobs:
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require explicit promotion through main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "Stable releases must be tagged from the main branch." >&2
+            exit 1
+          }
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -33,23 +45,12 @@ jobs:
           python -m pip install --disable-pip-version-check ziglang==0.14.1
           python -m ziglang version
 
-      - name: Install EDK2 build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            acpica-tools build-essential gcc-aarch64-linux-gnu nasm uuid-dev
-
-      - name: Build pinned HTTP/TLS firmware
-        run: tools/build_uefi_firmware.sh build/TinyArmOS-QEMU_EFI.fd
-
       - name: Test host update command
         run: |
           python -m unittest discover -s tests -v
           python tinyarmos --help
 
       - name: Rebuild from source
-        env:
-          TINYARMOS_REQUIRE_UEFI_FIRMWARE: "1"
         run: make
 
       - name: Verify build outputs
@@ -57,17 +58,13 @@ jobs:
         run: |
           set -euo pipefail
           test -s build/BOOTAA64.EFI
-          test "$(stat -c '%s' build/TinyArmOS-UTM.img)" -eq 67108864
-          test -f build/TinyArmOS.utm/config.plist
-          test -f build/TinyArmOS.utm/Images/disk-0.img
-          test -f build/TinyArmOS.utm/Images/tinyarmos-uefi-code.fd
-          test -f build/TinyArmOS.utm/Images/tinyarmos-uefi-vars.fd
-          cmp build/TinyArmOS-UTM.img build/TinyArmOS.utm/Images/disk-0.img
-          cmp build/TinyArmOS-QEMU_EFI.fd build/TinyArmOS.utm/Images/tinyarmos-uefi-code.fd
-          cmp build/TinyArmOS-QEMU_EFI-vars.fd build/TinyArmOS.utm/Images/tinyarmos-uefi-vars.fd
+          test "$(stat -c '%s' build/TinyArmOS.img)" -eq 67108864
+          test ! -e build/TinyArmOS.utm
+          test ! -e build/TinyArmOS-UTM.img
           file build/BOOTAA64.EFI | grep -Eq 'PE32\+ executable.*Aarch64'
-          strings build/BOOTAA64.EFI | grep -Fq 'update [check]'
-          strings build/BOOTAA64.EFI | grep -Fq 'Checking GitHub Releases over firmware HTTPS'
+          strings build/BOOTAA64.EFI | grep -Fq 'update [check] [main|nightly]'
+          strings build/BOOTAA64.EFI | grep -Fq 'Checking the '
+          strings build/BOOTAA64.EFI | grep -Fq 'nightly/TinyArmOS-update.txt'
           strings build/BOOTAA64.EFI | grep -Fq 'UTM Shared Network fallback configured; continuing automatically.'
           strings build/BOOTAA64.EFI | grep -Fq 'Network fallback is still initializing; retrying automatically...'
           strings build/BOOTAA64.EFI | grep -Fq '=== TinyArmOS Settings ==='
@@ -83,32 +80,20 @@ jobs:
           strings build/BOOTAA64.EFI | grep -Fq 'The running shell remains TinyArmOS'
           python - <<'PY'
           import os
-          import plistlib
           import runpy
           from pathlib import Path
 
           updater = runpy.run_path("tinyarmos", run_name="release_validation")
           tag = os.environ["GITHUB_REF_NAME"]
           assert tag.startswith("v")
-          updater["validate_efi"](Path("build/BOOTAA64.EFI").read_bytes(), tag[1:])
-          image = Path("build/TinyArmOS-UTM.img").read_bytes()
+          efi = Path("build/BOOTAA64.EFI").read_bytes()
+          updater["validate_efi"](efi, tag[1:])
+          image = Path("build/TinyArmOS.img").read_bytes()
           assert image[512:520] == b"EFI PART"
           assert image[2048 * 512 + 82:2048 * 512 + 90] == b"FAT32   "
-          with Path("build/TinyArmOS.utm/config.plist").open("rb") as stream:
-              config = plistlib.load(stream)
-          assert config["System"]["Architecture"] == "aarch64"
-          assert config["System"]["BootUefi"] is True
-          assert config["System"]["Memory"] >= 256
-          assert [drive["ImagePath"] for drive in config["Drives"]] == [
-              "tinyarmos-uefi-code.fd",
-              "tinyarmos-uefi-vars.fd",
-              "disk-0.img",
-          ]
-          assert [drive["InterfaceType"] for drive in config["Drives"]] == [
-              "pflash", "pflash", "virtio"
-          ]
-          assert config["Networking"]["NetworkEnabled"] is True
-          assert config["Networking"]["NetworkCard"] == "virtio-net-pci"
+          disk = updater["Fat32Image"](image)
+          assert disk.read_file(updater["BOOT_PATH"]) == efi
+          assert disk.read_file((b"DOOMU   WAD",)).startswith(b"IWAD")
           PY
 
       - name: Package release assets
@@ -120,26 +105,9 @@ jobs:
           efi_name="TinyArmOS-${tag}-BOOTAA64.EFI"
           mkdir -p dist
           cp build/BOOTAA64.EFI "dist/${efi_name}"
-          cp build/TinyArmOS-UTM.img "dist/TinyArmOS-${tag}-UTM.img"
-          cp -R build/TinyArmOS.utm "dist/TinyArmOS-${tag}.utm"
+          cp build/TinyArmOS.img "dist/TinyArmOS-${tag}.img"
           cp tinyarmos dist/tinyarmos
           chmod +x dist/tinyarmos
-          mkdir -p "dist/TinyArmOS-${tag}.utm/Licenses"
-          cp LICENSE "dist/TinyArmOS-${tag}.utm/Licenses/TinyArmOS-GPL-2.0-only.txt"
-          cp THIRD_PARTY_NOTICES.md "dist/TinyArmOS-${tag}.utm/Licenses/"
-          cp firmware/licenses/*.txt "dist/TinyArmOS-${tag}.utm/Licenses/"
-          cp third_party/PureDOOM/LICENSE \
-            "dist/TinyArmOS-${tag}.utm/Licenses/PureDOOM-GPL-2.0.txt"
-          cp assets/FREEDOOM-COPYING.txt \
-            assets/FREEDOOM-CREDITS.txt \
-            assets/FREEDOOM-CREDITS-MUSIC.txt \
-            assets/FREEDOOM-README.html \
-            "dist/TinyArmOS-${tag}.utm/Licenses/"
-          (
-            cd dist
-            zip -9 -r "TinyArmOS-${tag}-UTM.utm.zip" "TinyArmOS-${tag}.utm" tinyarmos
-            rm -rf "TinyArmOS-${tag}.utm"
-          )
           zip -9 "dist/TinyArmOS-${tag}-LICENSES.zip" \
             LICENSE THIRD_PARTY_NOTICES.md \
             firmware/licenses/EDK2-LICENSE.txt \

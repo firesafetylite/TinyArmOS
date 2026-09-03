@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import runpy
 import struct
 import tempfile
@@ -9,7 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 UPDATER = runpy.run_path(str(ROOT / "tinyarmos"), run_name="tinyarmos_module")
 IMAGE_BUILDER = runpy.run_path(
-    str(ROOT / "tools" / "make_utm_image.py"), run_name="image_builder_module"
+    str(ROOT / "tools" / "make_image.py"), run_name="image_builder_module"
+)
+SITE_BUILDER = runpy.run_path(
+    str(ROOT / "tools" / "make_update_site.py"), run_name="site_builder_module"
 )
 
 
@@ -65,6 +70,112 @@ class UpdaterTests(unittest.TestCase):
         with self.assertRaises(UPDATER["UpdateError"]):
             UPDATER["checksum_for"](text, "other.EFI")
 
+    def test_update_parser_defaults_to_main_and_accepts_nightly(self) -> None:
+        parser = UPDATER["build_parser"]()
+        self.assertEqual(parser.parse_args(["update", "disk.img"]).channel, "main")
+        self.assertEqual(
+            parser.parse_args(
+                ["update", "--channel", "nightly", "disk.img", "--check"]
+            ).channel,
+            "nightly",
+        )
+    def test_release_assets_select_main_and_nightly_channels(self) -> None:
+        stable_name = "TinyArmOS-v1.2.3-BOOTAA64.EFI"
+        nightly_name = "TinyArmOS-v1.3.0-nightly-BOOTAA64.EFI"
+        releases = {
+            UPDATER["MAIN_RELEASE_URL"]: {
+                "tag_name": "v1.2.3",
+                "draft": False,
+                "prerelease": False,
+                "assets": [stable_name, "SHA256SUMS"],
+            },
+            UPDATER["NIGHTLY_RELEASE_URL"]: {
+                "tag_name": "nightly",
+                "draft": False,
+                "prerelease": True,
+                "assets": [nightly_name, "SHA256SUMS"],
+            },
+        }
+        globals_ = UPDATER["release_assets"].__globals__
+        original_get = globals_["https_get"]
+
+        def fake_get(url: str, _limit: int, _accept: str) -> bytes:
+            release = releases[url]
+            release["assets"] = [
+                {
+                    "name": name,
+                    "browser_download_url": f"https://github.com/test/{name}",
+                    "size": 4096 if name != "SHA256SUMS" else 128,
+                }
+                for name in release["assets"]
+            ]
+            return json.dumps(release).encode("utf-8")
+
+        globals_["https_get"] = fake_get
+        try:
+            self.assertEqual(
+                UPDATER["release_assets"]("main")[::2],
+                ("1.2.3", stable_name),
+            )
+            self.assertEqual(
+                UPDATER["release_assets"]("nightly")[::2],
+                ("1.3.0", nightly_name),
+            )
+        finally:
+            globals_["https_get"] = original_get
+
+    def test_update_site_publishes_both_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main = root / "main"
+            nightly = root / "nightly"
+            output = root / "public"
+            main.mkdir()
+            nightly.mkdir()
+            for channel, source, version, filename, url in (
+                (
+                    "main",
+                    main,
+                    "1.2.3",
+                    "TinyArmOS-v1.2.3-BOOTAA64.EFI",
+                    "https://firesafetylite.github.io/TinyArmOS/"
+                    "TinyArmOS-latest-BOOTAA64.EFI",
+                ),
+                (
+                    "nightly",
+                    nightly,
+                    "1.3.0",
+                    "TinyArmOS-v1.3.0-nightly-BOOTAA64.EFI",
+                    "https://firesafetylite.github.io/TinyArmOS/nightly/"
+                    "TinyArmOS-latest-BOOTAA64.EFI",
+                ),
+            ):
+                image = fake_efi(version)
+                (source / filename).write_bytes(image)
+                manifest_name = (
+                    "TinyArmOS-update.txt"
+                    if channel == "main"
+                    else "TinyArmOS-nightly-update.txt"
+                )
+                (source / manifest_name).write_text(
+                    f"version={version}\n"
+                    f"size={len(image)}\n"
+                    f"sha256={hashlib.sha256(image).hexdigest()}\n"
+                    f"url={url}\n",
+                    encoding="ascii",
+                )
+            SITE_BUILDER["build_site"](main, output, nightly)
+            self.assertEqual(
+                (output / "TinyArmOS-latest-BOOTAA64.EFI").read_bytes(),
+                fake_efi("1.2.3"),
+            )
+            self.assertEqual(
+                (output / "nightly" / "TinyArmOS-latest-BOOTAA64.EFI").read_bytes(),
+                fake_efi("1.3.0"),
+            )
+            self.assertIn("Main manifest", (output / "index.html").read_text())
+            self.assertIn("Nightly beta manifest", (output / "index.html").read_text())
+
     def test_disk_update_preserves_other_files_and_creates_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -92,7 +203,7 @@ class UpdaterTests(unittest.TestCase):
             backed_up = UPDATER["Fat32Image"](backup.read_bytes())
             self.assertEqual(backed_up.read_file(UPDATER["BOOT_PATH"]), old_efi)
 
-    def test_utm_target_resolves_to_disk(self) -> None:
+    def test_legacy_utm_target_resolves_to_disk(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bundle = Path(directory) / "TinyArmOS.utm"
             images = bundle / "Images"
