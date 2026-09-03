@@ -4,6 +4,16 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-02
+
+### Added
+
+- Guarded logical `rm -rf /` support with protected-node unlocking, exact destructive confirmation, and recoverable snapshots.
+
+### Changed
+
+- Simplified Recovery Agent commands by folding `restore` into `repair` and removing protection controls that had no Recovery-side write operation to govern.
+
 ## [0.1.1] - 2026-09-02
 
 ### Added
@@ -51,6 +61,7 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 - Enabled ECDHE and protocol-backed entropy for UEFI TLS, with a pinned three-root trust store.
 - Reject malformed release versions and downgrade manifests before downloading an update.
 
-[Unreleased]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1...v0.1.1
 [0.1]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.1

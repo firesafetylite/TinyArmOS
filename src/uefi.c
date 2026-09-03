@@ -27,7 +27,7 @@ typedef UINT64             EFI_STATUS;
 
 #define EVT_NOTIFY_SIGNAL 0x00000200U
 #define TPL_CALLBACK      8U
-#define TINYARMOS_VERSION "0.1.1"
+#define TINYARMOS_VERSION "0.1.2"
 
 struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
 struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
@@ -954,7 +954,7 @@ static void fs_restore_system(void) {
     }
     if (recovery >= 0) {
         fs_ensure_file((UINTN)recovery, "help.txt",
-            "Recovery Agent: scan, repair, rollback, restore, reset, continue", FS_PROTECTED);
+            "Recovery Agent: scan, repair, rollback, pwd, ls, cd, cat, stat, tree, reset, continue", FS_PROTECTED);
         fs_ensure_file((UINTN)recovery, "policy.txt",
             "Verify every node checksum at boot. Auto-repair damaged metadata. Preserve two alternating generations. Protected nodes require an explicit boot-scoped unlock.", FS_PROTECTED);
         fs_ensure_file((UINTN)recovery, "snapshots.info",
@@ -1278,8 +1278,13 @@ static int fs_check(int repair, int verbose) {
     return errors;
 }
 
-static void fs_commit(void) {
-    if (gStorageReady && !storage_sync()) print("warning: persistent snapshot failed; RAM copy is still active\n");
+static int fs_commit(void) {
+    if (!gStorageReady) return 0;
+    if (!storage_sync()) {
+        print("warning: persistent snapshot failed; RAM copy is still active\n");
+        return 0;
+    }
+    return 1;
 }
 
 static int poll_key(char *character) {
@@ -1598,6 +1603,26 @@ static void command_settings(void) {
     }
 }
 
+static void command_protect(const char *command) {
+    if (streq(command, "protect") || streq(command, "protect status")) {
+        print(gProtectionUnlocked ? "protected nodes are UNLOCKED until reboot\n" :
+              "protected nodes are locked\n");
+    } else if (streq(command, "protect unlock")) {
+        char answer[16];
+        print("Type UNLOCK to allow protected-node changes this boot: ");
+        read_line(answer, sizeof(answer));
+        if (streq(answer, "UNLOCK")) {
+            gProtectionUnlocked = 1;
+            print("protection unlocked; run 'protect lock' when finished\n");
+        } else print("unlock cancelled\n");
+    } else if (streq(command, "protect lock")) {
+        gProtectionUnlocked = 0;
+        print("protected nodes locked\n");
+    } else {
+        print("protect: use status, unlock, or lock\n");
+    }
+}
+
 #include "update.inc"
 #include "doom_port.inc"
 
@@ -1667,9 +1692,6 @@ static void recovery_help(void) {
         "  scan             verify nodes, checksums, and snapshots\n"
         "  repair           repair metadata and restore system files\n"
         "  rollback         load the previous valid disk snapshot\n"
-        "  restore          restore protected system files\n"
-        "  unlock           allow protected-node writes this boot\n"
-        "  lock             block protected-node writes\n"
         "  pwd              print the current directory\n"
         "  ls [PATH]        list a directory or file\n"
         "  cd [PATH|-]      change directory; no path opens /home\n"
@@ -1715,19 +1737,6 @@ static void recovery_agent(void) {
                 fs_commit();
                 print("rollback: previous snapshot restored\n");
             }
-        } else if (streq(line, "restore")) {
-            fs_restore_system();
-            fs_commit();
-            print("protected system files restored\n");
-        } else if (streq(line, "unlock")) {
-            char answer[16];
-            print("Type UNLOCK to allow protected-node changes this boot: ");
-            read_line(answer, sizeof(answer));
-            if (streq(answer, "UNLOCK")) { gProtectionUnlocked = 1; print("protection unlocked until reboot or 'lock'\n"); }
-            else print("unlock cancelled\n");
-        } else if (streq(line, "lock")) {
-            gProtectionUnlocked = 0;
-            print("protected nodes locked\n");
         } else if (streq(line, "pwd")) {
             char path[FS_PATH_BYTES];
             fs_path(gCwd, path, sizeof(path));
@@ -1822,6 +1831,7 @@ static void command_help(void) {
         "  mkdir PATH           create a directory\n"
         "  rm PATH              remove a file\n"
         "  rm -rf PATH          recursively remove a directory tree\n"
+        "                      / requires unlock and ERASE ROOT confirmation\n"
         "  rmdir PATH           remove an empty directory\n"
         "  cp SOURCE DEST       copy a file\n"
         "  mv SOURCE DEST       move or rename a node\n"
@@ -2002,7 +2012,27 @@ static void run_command(char *line) {
         int directory = recursive || starts_with(command, "rmdir ");
         char *path = skip_spaces(command + (recursive ? 7 : (directory ? 6 : 3)));
         int node = *path ? fs_resolve(path) : -1;
-        if (node <= 0) print("remove: path not found or root\n");
+        if (node < 0) print("remove: path not found\n");
+        else if (recursive && (UINTN)node == FS_ROOT) {
+            if (!gProtectionUnlocked) {
+                print("remove: root contains protected nodes (use 'protect unlock')\n");
+            } else {
+                char answer[24];
+                print("WARNING: this erases every MiniFS2 file and directory.\n");
+                print("Type ERASE ROOT to continue: ");
+                read_line(answer, sizeof(answer));
+                if (streq(answer, "ERASE ROOT")) {
+                    gCwd = FS_ROOT;
+                    gPreviousCwd = FS_ROOT;
+                    fs_remove_recursive(FS_ROOT);
+                    if (fs_commit()) {
+                        print("removed all root filesystem contents; snapshot saved\n");
+                    } else {
+                        print("removed root contents from RAM only; data may return after reboot\n");
+                    }
+                } else print("root removal cancelled\n");
+            }
+        } else if ((UINTN)node == FS_ROOT) print("remove: use rm -rf / for root\n");
         else if (fs_is_protected((UINTN)node) && !gProtectionUnlocked) print("remove: protected system node (use 'protect unlock')\n");
         else if (!recursive && directory && gNodes[node].type != FS_DIRECTORY) print("rmdir: not a directory\n");
         else if (!directory && gNodes[node].type != FS_FILE) print("rm: use rmdir or rm -rf for directories\n");
@@ -2110,17 +2140,8 @@ static void run_command(char *line) {
         settings_use_default_color();
     } else if (streq(command, "settings")) {
         command_settings();
-    } else if (streq(command, "protect") || streq(command, "protect status")) {
-        print(gProtectionUnlocked ? "protected nodes are UNLOCKED until reboot\n" : "protected nodes are locked\n");
-    } else if (streq(command, "protect unlock")) {
-        char answer[16];
-        print("Type UNLOCK to allow changes under /system, /apps, and /recovery this boot: ");
-        read_line(answer, sizeof(answer));
-        if (streq(answer, "UNLOCK")) { gProtectionUnlocked = 1; print("protection unlocked; run 'protect lock' when finished\n"); }
-        else print("unlock cancelled\n");
-    } else if (streq(command, "protect lock")) {
-        gProtectionUnlocked = 0;
-        print("protected nodes locked\n");
+    } else if (streq(command, "protect") || starts_with(command, "protect ")) {
+        command_protect(command);
     } else if (streq(command, "update") || streq(command, "update check")) {
         command_update(streq(command, "update check"));
     } else if (streq(command, "recovery")) {

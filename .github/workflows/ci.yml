@@ -54,6 +54,8 @@ jobs:
           strings build/BOOTAA64.EFI | grep -Fq 'Network fallback is still initializing; retrying automatically...'
           strings build/BOOTAA64.EFI | grep -Fq '=== TinyArmOS Settings ==='
           strings build/BOOTAA64.EFI | grep -Fq 'settings             open the full-screen persistent settings UI'
+          strings build/BOOTAA64.EFI | grep -Fq 'Type ERASE ROOT to continue:'
+          strings build/BOOTAA64.EFI | grep -Fq 'data may return after reboot'
           python - <<'PY'
           import plistlib
           from pathlib import Path

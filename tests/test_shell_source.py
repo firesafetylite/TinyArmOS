@@ -15,7 +15,7 @@ def source_block(start: str, end: str) -> str:
 
 class ShellSourceTests(unittest.TestCase):
     def test_release_version(self) -> None:
-        self.assertIn('#define TINYARMOS_VERSION "0.1.1"', SOURCE)
+        self.assertIn('#define TINYARMOS_VERSION "0.1.2"', SOURCE)
 
     def test_main_help_documents_every_canonical_command(self) -> None:
         help_text = source_block(
@@ -78,9 +78,6 @@ class ShellSourceTests(unittest.TestCase):
             "scan",
             "repair",
             "rollback",
-            "restore",
-            "unlock",
-            "lock",
             "pwd",
             "ls [PATH]",
             "cd [PATH|-]",
@@ -95,6 +92,16 @@ class ShellSourceTests(unittest.TestCase):
         for command in commands:
             with self.subTest(command=command):
                 self.assertIn(command, help_text)
+
+    def test_recovery_commands_are_simplified(self) -> None:
+        dispatch = source_block(
+            "static void recovery_agent(void)", "static void command_help(void)"
+        )
+        for removed in ("restore", "unlock", "lock", "protect"):
+            with self.subTest(command=removed):
+                self.assertNotIn(f'streq(line, "{removed}")', dispatch)
+        self.assertNotIn('starts_with(line, "protect ")', dispatch)
+        self.assertNotIn("command_protect(line);", dispatch)
 
     def test_redundant_shell_aliases_are_not_dispatched(self) -> None:
         dispatch = source_block(
@@ -120,6 +127,21 @@ class ShellSourceTests(unittest.TestCase):
                 pattern = rf"(?:streq|starts_with)\(command, \"{re.escape(alias)}(?: )?\"\)"
                 self.assertIsNone(re.search(pattern, dispatch))
         self.assertNotIn('starts_with(command, "run ")', dispatch)
+
+    def test_root_recursive_remove_is_guarded(self) -> None:
+        remove_dispatch = source_block(
+            '} else if (starts_with(command, "rm ")',
+            '} else if (starts_with(command, "cp ")',
+        )
+        self.assertIn("recursive && (UINTN)node == FS_ROOT", remove_dispatch)
+        self.assertIn("if (!gProtectionUnlocked)", remove_dispatch)
+        self.assertIn('streq(answer, "ERASE ROOT")', remove_dispatch)
+        self.assertIn("gCwd = FS_ROOT;", remove_dispatch)
+        self.assertIn("gPreviousCwd = FS_ROOT;", remove_dispatch)
+        self.assertIn("fs_remove_recursive(FS_ROOT);", remove_dispatch)
+        self.assertIn("if (fs_commit())", remove_dispatch)
+        self.assertIn("snapshot saved", remove_dispatch)
+        self.assertIn("data may return after reboot", remove_dispatch)
 
     def test_file_views_use_semantic_accent_colors(self) -> None:
         listing = source_block(
