@@ -1,7 +1,7 @@
 
 # (DISCLAIMER: TinyArmOS is a project fully managed by ChatGPT codex, everything in this github besides this message your seeing was created and is overseen by chatgpt, if you have any issues email me at 8minecraft.19@gmail.com)
 
-# TinyArmOS v0.1.2
+# TinyArmOS v0.1.3
 
 [![CI](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml/badge.svg)](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/firesafetylite/TinyArmOS?display_name=tag)](https://github.com/firesafetylite/TinyArmOS/releases/latest)
@@ -11,9 +11,9 @@ TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a pers
 
 ## Download and run in UTM
 
-For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.1.2-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, custom UEFI firmware, 256 MiB RAM, VirtIO networking and RNG, and a graphical console. UTM on Apple silicon is the primary run environment. The archive also contains the `tinyarmos` host command as an update fallback.
+For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.1.3-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, custom UEFI firmware, 256 MiB RAM, VirtIO networking and RNG, and a graphical console. UTM on Apple silicon is the primary run environment. The archive also contains the `tinyarmos` host command as an update fallback.
 
-The release also provides `TinyArmOS-v0.1.2-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.1.2-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
+The release also provides `TinyArmOS-v0.1.3-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.1.3-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
 
 The disk image's FAT32 EFI System Partition contains:
 
@@ -34,9 +34,11 @@ Verified startup checks:
 
 1. ARM64 firmware and timer
 2. Writable UEFI storage
-3. The newest valid MiniFS2 snapshot
-4. Filesystem metadata and per-node checksums
+3. Both MiniFS2 snapshot payloads and selection of the newest valid copy
+4. The built-in `scan` check across filesystem structure and every active file checksum
 5. The interactive shell
+
+The same integrity scan available in the Recovery Agent now runs automatically before the normal shell can boot. A detected file, directory, or checksum problem triggers repair and opens Recovery instead of silently continuing.
 
 Press **R** during the two-second boot prompt, or run `recovery`. The Recovery Agent supports scanning, repair, rollback, formatting, and read-only filesystem navigation. The redundant `restore` action is folded into `repair`; protection controls remain only in the normal shell, where filesystem writes are available.
 
@@ -227,7 +229,7 @@ The in-OS updater uses the bundled firmware's UEFI HTTP/TLS service with IPv4 DH
 If the VM cannot reach the update channel, shut it down and use the included host fallback:
 
 ```bash
-./tinyarmos update TinyArmOS-v0.1.2.utm
+./tinyarmos update TinyArmOS-v0.1.3.utm
 ```
 
 The host command uses the host's maintained HTTPS stack and updates only `EFI/BOOT/BOOTAA64.EFI`, preserving MiniFS snapshots, user files, and Freedoom. Keep the VM stopped while using it.

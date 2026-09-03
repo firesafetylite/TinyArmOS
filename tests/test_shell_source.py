@@ -15,7 +15,7 @@ def source_block(start: str, end: str) -> str:
 
 class ShellSourceTests(unittest.TestCase):
     def test_release_version(self) -> None:
-        self.assertIn('#define TINYARMOS_VERSION "0.1.2"', SOURCE)
+        self.assertIn('#define TINYARMOS_VERSION "0.1.3"', SOURCE)
 
     def test_main_help_documents_every_canonical_command(self) -> None:
         help_text = source_block(
@@ -93,6 +93,27 @@ class ShellSourceTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn(command, help_text)
 
+    def test_startup_runs_the_same_integrity_scan_as_recovery(self) -> None:
+        scan = source_block(
+            "static int fs_scan_integrity(int verbose)",
+            "static int fs_commit(void)",
+        )
+        boot = source_block(
+            "static int boot_screen(EFI_HANDLE imageHandle)",
+            "static void recovery_help(void)",
+        )
+        recovery = source_block(
+            "static void recovery_agent(void)", "static void command_help(void)"
+        )
+        self.assertIn("fs_check(0, verbose)", scan)
+        self.assertIn("storage_probe_slots();", scan)
+        self.assertIn("fs_scan_integrity(0);", boot)
+        self.assertLess(
+            boot.index("fs_scan_integrity(0);"),
+            boot.index('boot_stage(5, "interactive shell", 1);'),
+        )
+        self.assertIn("fs_scan_integrity(1);", recovery)
+
     def test_recovery_commands_are_simplified(self) -> None:
         dispatch = source_block(
             "static void recovery_agent(void)", "static void command_help(void)"
@@ -133,6 +154,8 @@ class ShellSourceTests(unittest.TestCase):
             '} else if (starts_with(command, "rm ")',
             '} else if (starts_with(command, "cp ")',
         )
+        self.assertIn('rootRequest = recursive && streq(path, "/")', remove_dispatch)
+        self.assertIn("rootRequest ? (int)FS_ROOT", remove_dispatch)
         self.assertIn("recursive && (UINTN)node == FS_ROOT", remove_dispatch)
         self.assertIn("if (!gProtectionUnlocked)", remove_dispatch)
         self.assertIn('streq(answer, "ERASE ROOT")', remove_dispatch)

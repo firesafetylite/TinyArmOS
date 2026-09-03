@@ -74,6 +74,9 @@ jobs:
           strings build/BOOTAA64.EFI | grep -Fq 'settings             open the full-screen persistent settings UI'
           strings build/BOOTAA64.EFI | grep -Fq 'Type ERASE ROOT to continue:'
           strings build/BOOTAA64.EFI | grep -Fq 'data may return after reboot'
+          strings build/BOOTAA64.EFI | grep -Fq 'scan: file integrity and checksums'
+          strings build/BOOTAA64.EFI | grep -Fq 'scan: active file integrity verified'
+          strings build/BOOTAA64.EFI | grep -Fq 'The running shell remains TinyArmOS'
           python - <<'PY'
           import os
           import plistlib

@@ -1108,7 +1108,8 @@ static void command_update(int checkOnly) {
     }
     print("TinyArmOS ");
     print(manifest.version);
-    print(" installed. Type REBOOT to restart now: ");
+    print(" installed.\nThe running shell remains TinyArmOS " TINYARMOS_VERSION " until reboot.\n");
+    print("Type REBOOT to restart now: ");
     read_line(answer, sizeof(answer));
     if (streq(answer, "REBOOT")) {
         gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, (void *)0);

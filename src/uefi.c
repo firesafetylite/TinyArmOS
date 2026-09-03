@@ -27,7 +27,7 @@ typedef UINT64             EFI_STATUS;
 
 #define EVT_NOTIFY_SIGNAL 0x00000200U
 #define TPL_CALLBACK      8U
-#define TINYARMOS_VERSION "0.1.2"
+#define TINYARMOS_VERSION "0.1.3"
 
 struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
 struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
@@ -895,7 +895,7 @@ static void fs_restore_system(void) {
     }
     if (config >= 0) {
         fs_ensure_file((UINTN)config, "boot.cfg",
-            "recovery=auto\nrecovery_window=2s\nsnapshots=2\nwatchdog=disabled", FS_PROTECTED);
+            "recovery=auto\nrecovery_window=2s\nsnapshots=2\nintegrity_scan=scan\nwatchdog=disabled", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "shell.cfg",
             "home=/home\napps=/apps\ntemporary=/tmp\nprompt=tinyarm\nsettings=/home/.tinyarmrc\nnavigation=go,open,up,back,home,root,cd", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "protection.cfg",
@@ -915,7 +915,7 @@ static void fs_restore_system(void) {
     }
     if (security >= 0) {
         fs_ensure_file((UINTN)security, "integrity.policy",
-            "critical nodes use FNV-1a checksums\nupdates require HTTPS, SHA-256, and ARM64 PE validation\nverify at boot\nauto-repair metadata\nrollback to newest valid snapshot", FS_PROTECTED);
+            "critical nodes use FNV-1a checksums\nupdates require HTTPS, SHA-256, and ARM64 PE validation\nverify at boot with scan\nauto-repair metadata\nrollback to newest valid snapshot", FS_PROTECTED);
         fs_ensure_file((UINTN)security, "protected.paths",
             "/system\n/apps\n/recovery\n/lost+found\nUnlock requires exact UNLOCK confirmation and expires at reboot.", FS_PROTECTED);
     }
@@ -956,7 +956,7 @@ static void fs_restore_system(void) {
         fs_ensure_file((UINTN)recovery, "help.txt",
             "Recovery Agent: scan, repair, rollback, pwd, ls, cd, cat, stat, tree, reset, continue", FS_PROTECTED);
         fs_ensure_file((UINTN)recovery, "policy.txt",
-            "Verify every node checksum at boot. Auto-repair damaged metadata. Preserve two alternating generations. Protected nodes require an explicit boot-scoped unlock.", FS_PROTECTED);
+            "Run the same scan before every boot and on demand. Verify every node checksum and snapshot payload. Auto-repair damaged metadata. Preserve two alternating generations.", FS_PROTECTED);
         fs_ensure_file((UINTN)recovery, "snapshots.info",
             "primary=TINYFS0.BIN\nsecondary=TINYFS1.BIN\nselection=newest-valid\nrollback=previous-valid", FS_PROTECTED);
     }
@@ -1274,6 +1274,30 @@ static int fs_check(int repair, int verbose) {
             print_u64((UINT64)errors);
             print(repair ? " issue(s) repaired\n" : " issue(s) found\n");
         } else print("fsck: clean\n");
+    }
+    return errors;
+}
+
+static int fs_scan_integrity(int verbose) {
+    int errors = fs_check(0, verbose);
+    if (!gStorageReady) {
+        if (verbose) print("snapshots: unavailable (volatile storage)\n");
+        return errors;
+    }
+    storage_probe_slots();
+    if (verbose) {
+        print("snapshot A: ");
+        print(gSlotValid[0] ? "valid generation " : "missing/corrupt\n");
+        if (gSlotValid[0]) { print_u64(gSlotGeneration[0]); print("\n"); }
+        print("snapshot B: ");
+        print(gSlotValid[1] ? "valid generation " : "missing/corrupt\n");
+        if (gSlotValid[1]) { print_u64(gSlotGeneration[1]); print("\n"); }
+    }
+    if (!gSlotValid[0] && !gSlotValid[1]) {
+        if (verbose) print("scan: no valid persistent snapshot\n");
+        errors++;
+    } else if (verbose && !errors) {
+        print("scan: active file integrity verified\n");
     }
     return errors;
 }
@@ -1662,8 +1686,8 @@ static int boot_screen(EFI_HANDLE imageHandle) {
         if (gStorageReady) storage_sync();
     }
     boot_stage(3, mounted ? "dual-snapshot MiniFS2 mount" : "new MiniFS2 filesystem", 1);
-    errors = fs_check(0, 0);
-    boot_stage(4, "Recovery Agent integrity scan", errors == 0);
+    errors = fs_scan_integrity(0);
+    boot_stage(4, "scan: file integrity and checksums", errors == 0);
     if (errors) {
         fs_check(1, 0);
         fs_commit();
@@ -1719,14 +1743,7 @@ static void recovery_agent(void) {
         if (streq(line, "help")) {
             recovery_help();
         } else if (streq(line, "scan")) {
-            fs_check(0, 1);
-            storage_probe_slots();
-            print("snapshot A: ");
-            print(gSlotValid[0] ? "valid generation " : "missing/corrupt\n");
-            if (gSlotValid[0]) { print_u64(gSlotGeneration[0]); print("\n"); }
-            print("snapshot B: ");
-            print(gSlotValid[1] ? "valid generation " : "missing/corrupt\n");
-            if (gSlotValid[1]) { print_u64(gSlotGeneration[1]); print("\n"); }
+            fs_scan_integrity(1);
         } else if (streq(line, "repair")) {
             fs_check(1, 1);
             fs_commit();
@@ -2011,7 +2028,8 @@ static void run_command(char *line) {
         int recursive = starts_with(command, "rm -rf ");
         int directory = recursive || starts_with(command, "rmdir ");
         char *path = skip_spaces(command + (recursive ? 7 : (directory ? 6 : 3)));
-        int node = *path ? fs_resolve(path) : -1;
+        int rootRequest = recursive && streq(path, "/");
+        int node = rootRequest ? (int)FS_ROOT : (*path ? fs_resolve(path) : -1);
         if (node < 0) print("remove: path not found\n");
         else if (recursive && (UINTN)node == FS_ROOT) {
             if (!gProtectionUnlocked) {

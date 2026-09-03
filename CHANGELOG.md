@@ -4,6 +4,17 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-02
+
+### Changed
+
+- Startup verification now runs the same `scan` integrity path as Recovery, validating MiniFS2 structure, active file checksums, and persistent snapshot payloads before the shell boots.
+
+### Fixed
+
+- Recognize the literal `/` target directly for `rm -rf /` before general path resolution.
+- Clarify after an in-OS installation that the old shell remains loaded until reboot.
+
 ## [0.1.2] - 2026-09-02
 
 ### Added
@@ -61,7 +72,8 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 - Enabled ECDHE and protocol-backed entropy for UEFI TLS, with a pinned three-root trust store.
 - Reject malformed release versions and downgrade manifests before downloading an update.
 
-[Unreleased]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1...v0.1.1
 [0.1]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.1
