@@ -78,7 +78,7 @@ jobs:
           ! strings build/BOOTAA64.EFI | grep -Fq 'bootmgr              open'
           ! strings build/BOOTAA64.EFI | grep -Fq 'Recovery Agent'
           ! strings build/BOOTAA64.EFI | grep -Fq 'command: recovery'
-          strings build/BOOTAA64.EFI | grep -Fq 'scan: file integrity and checksums'
+          strings build/BOOTAA64.EFI | grep -Fq 'scan N           verify a partition'
           strings build/BOOTAA64.EFI | grep -Fq 'scan: active file integrity verified'
           strings build/BOOTAA64.EFI | grep -Fq 'The running shell remains TinyArmOS'
           python - <<'PY'
