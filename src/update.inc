@@ -709,7 +709,7 @@ static EFI_STATUS update_http_fetch_once(const char *url, UINT8 *buffer, UINTN c
     requestHeaders[0].FieldName = "Host";
     requestHeaders[0].FieldValue = host;
     requestHeaders[1].FieldName = "User-Agent";
-    requestHeaders[1].FieldValue = "TinyArmOS-Updater/0.1";
+    requestHeaders[1].FieldValue = "TinyArmOS-Updater/" TINYARMOS_VERSION;
     requestHeaders[2].FieldName = "Accept";
     requestHeaders[2].FieldValue = "application/octet-stream";
     requestHeaders[3].FieldName = "Connection";

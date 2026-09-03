@@ -14,6 +14,9 @@ def source_block(start: str, end: str) -> str:
 
 
 class ShellSourceTests(unittest.TestCase):
+    def test_release_version(self) -> None:
+        self.assertIn('#define TINYARMOS_VERSION "0.1.1"', SOURCE)
+
     def test_main_help_documents_every_canonical_command(self) -> None:
         help_text = source_block(
             "static void command_help(void)", "static void command_info(void)"
@@ -117,6 +120,31 @@ class ShellSourceTests(unittest.TestCase):
                 pattern = rf"(?:streq|starts_with)\(command, \"{re.escape(alias)}(?: )?\"\)"
                 self.assertIsNone(re.search(pattern, dispatch))
         self.assertNotIn('starts_with(command, "run ")', dispatch)
+
+    def test_file_views_use_semantic_accent_colors(self) -> None:
+        listing = source_block(
+            "static void fs_list(UINTN directory)",
+            "static void fs_tree_node(UINTN node, UINTN depth)",
+        )
+        tree = source_block(
+            "static void fs_tree_node(UINTN node, UINTN depth)",
+            "static void fs_tree(UINTN node)",
+        )
+        for view in (listing, tree):
+            self.assertIn("settings_use_accent_color();", view)
+            self.assertIn("settings_use_default_color();", view)
+        self.assertIn('print("  [system]");', listing)
+
+    def test_settings_is_full_screen_and_auto_saves(self) -> None:
+        settings_ui = source_block(
+            "static void settings_show(const char *notice)",
+            '#include "update.inc"',
+        )
+        self.assertIn("Changes save automatically", settings_ui)
+        self.assertIn("Return to shell", settings_ui)
+        self.assertIn("gST->ConOut->ClearScreen", settings_ui)
+        self.assertIn("settings_save_notice()", settings_ui)
+        self.assertNotIn("Save and exit", settings_ui)
 
     def test_readme_keeps_user_disclaimer(self) -> None:
         self.assertIn(

@@ -4,6 +4,8 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-02
+
 ### Added
 
 - A persistent `settings` menu for default and accent colors, prompt paths, startup directory, and scrollback.
@@ -11,6 +13,8 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ### Changed
 
+- Turned `settings` into a dedicated full-screen UI that auto-saves each change and stays open until explicitly closed.
+- Applied the configured accent color to directory entries, tree branches, and protected-node labels.
 - Removed redundant command aliases while retaining one canonical command for each action.
 
 ### Fixed
@@ -47,4 +51,6 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 - Enabled ECDHE and protocol-backed entropy for UEFI TLS, with a pinned three-root trust store.
 - Reject malformed release versions and downgrade manifests before downloading an update.
 
+[Unreleased]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/firesafetylite/TinyArmOS/compare/v0.1...v0.1.1
 [0.1]: https://github.com/firesafetylite/TinyArmOS/releases/tag/v0.1

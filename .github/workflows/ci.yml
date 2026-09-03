@@ -53,7 +53,7 @@ jobs:
           strings build/BOOTAA64.EFI | grep -Fq 'UTM Shared Network fallback configured; continuing automatically.'
           strings build/BOOTAA64.EFI | grep -Fq 'Network fallback is still initializing; retrying automatically...'
           strings build/BOOTAA64.EFI | grep -Fq '=== TinyArmOS Settings ==='
-          strings build/BOOTAA64.EFI | grep -Fq 'settings             configure persistent shell preferences'
+          strings build/BOOTAA64.EFI | grep -Fq 'settings             open the full-screen persistent settings UI'
           python - <<'PY'
           import plistlib
           from pathlib import Path

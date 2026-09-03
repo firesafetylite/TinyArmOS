@@ -1,7 +1,7 @@
 
 # (DISCLAIMER: TinyArmOS is a project fully managed by ChatGPT codex, everything in this github besides this message your seeing was created and is overseen by chatgpt, if you have any issues email me at 8minecraft.19@gmail.com)
 
-# TinyArmOS v0.1
+# TinyArmOS v0.1.1
 
 [![CI](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml/badge.svg)](https://github.com/firesafetylite/TinyArmOS/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/firesafetylite/TinyArmOS?display_name=tag)](https://github.com/firesafetylite/TinyArmOS/releases/latest)
@@ -11,9 +11,9 @@ TinyArmOS is a lightweight, freestanding ARM64 UEFI shell OS. It includes a pers
 
 ## Download and run in UTM
 
-For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.1-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, custom UEFI firmware, 256 MiB RAM, VirtIO networking and RNG, and a graphical console. UTM on Apple silicon is the primary run environment. The archive also contains the `tinyarmos` host command as an update fallback.
+For a ready-to-run build, open the [latest release](https://github.com/firesafetylite/TinyArmOS/releases/latest), download `TinyArmOS-v0.1.1-UTM.utm.zip`, unzip it, then double-click the `.utm` bundle and press Run. The bundle is configured for ARM64 `virt`, custom UEFI firmware, 256 MiB RAM, VirtIO networking and RNG, and a graphical console. UTM on Apple silicon is the primary run environment. The archive also contains the `tinyarmos` host command as an update fallback.
 
-The release also provides `TinyArmOS-v0.1-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.1-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
+The release also provides `TinyArmOS-v0.1.1-UTM.img`, a standalone 64 MiB GPT disk image for compatible ARM64 UEFI virtual machines, and `TinyArmOS-v0.1.1-BOOTAA64.EFI` for custom EFI setups. Verify downloads with the release's `SHA256SUMS` file.
 
 The disk image's FAT32 EFI System Partition contains:
 
@@ -169,15 +169,17 @@ The engine is [PureDOOM](https://github.com/Daivuk/PureDOOM). The legally redist
 
 ## Settings
 
-Run `settings` to open the persistent settings menu. It configures:
+Run `settings` to open the dedicated full-screen settings UI. It configures:
 
 - Default shell text color
-- Accent and prompt color
+- Accent color used for prompts, directories, and protected-node labels
 - Whether the current path appears in the prompt
 - Whether the shell starts in `/` or `/home`
 - Whether 256-line scrollback is enabled
 
-Choose **0** to save. Settings are validated and stored in `/home/.tinyarmrc`, so they survive reboots and OS updates. Black foreground text is excluded because the console background is black. Restore Defaults is available inside the menu.
+Every change is validated and saved automatically to `/home/.tinyarmrc`, while the UI remains open for additional changes. Choose **0** only when you are ready to return to the shell. Settings survive reboots and OS updates. Black foreground text is excluded because the console background is black. Restore Defaults is available inside the menu.
+
+The selected accent color also provides semantic filesystem highlighting: directory entries and tree branches stand out from regular files, and `[system]` labels identify protected nodes.
 
 ## Shell scrollback
 
@@ -227,7 +229,7 @@ The in-OS updater uses the bundled firmware's UEFI HTTP/TLS service with IPv4 DH
 If the VM cannot reach the update channel, shut it down and use the included host fallback:
 
 ```bash
-./tinyarmos update TinyArmOS-v0.1.utm
+./tinyarmos update TinyArmOS-v0.1.1.utm
 ```
 
 The host command uses the host's maintained HTTPS stack and updates only `EFI/BOOT/BOOTAA64.EFI`, preserving MiniFS snapshots, user files, and Freedoom. Keep the VM stopped while using it.

@@ -27,7 +27,7 @@ typedef UINT64             EFI_STATUS;
 
 #define EVT_NOTIFY_SIGNAL 0x00000200U
 #define TPL_CALLBACK      8U
-#define TINYARMOS_VERSION "0.1"
+#define TINYARMOS_VERSION "0.1.1"
 
 struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
 struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
@@ -308,6 +308,9 @@ typedef struct {
 } SHELL_SETTINGS;
 
 static SHELL_SETTINGS gSettings;
+
+static void settings_use_default_color(void);
+static void settings_use_accent_color(void);
 
 typedef struct {
     UINT8 used;
@@ -1103,6 +1106,7 @@ static int fs_is_protected(UINTN node) {
 static void fs_list(UINTN directory) {
     UINTN index;
     UINTN found = 0;
+    settings_use_default_color();
     if (gNodes[directory].type == FS_FILE) {
         print(gNodes[directory].name);
         print("  ");
@@ -1112,19 +1116,29 @@ static void fs_list(UINTN directory) {
     }
     for (index = 1; index < FS_MAX_NODES; index++) {
         if (gNodes[index].used && gNodes[index].parent == directory) {
-            print(gNodes[index].type == FS_DIRECTORY ? "  <DIR>  " : "         ");
-            print(gNodes[index].name);
-            if (gNodes[index].type == FS_FILE) {
+            if (gNodes[index].type == FS_DIRECTORY) {
+                settings_use_accent_color();
+                print("  <DIR>  ");
+                print(gNodes[index].name);
+                settings_use_default_color();
+            } else {
+                print("         ");
+                print(gNodes[index].name);
                 print("  ");
                 print_u64(gNodes[index].size);
                 print(" B");
             }
-            if (fs_is_protected(index)) print("  [system]");
+            if (fs_is_protected(index)) {
+                settings_use_accent_color();
+                print("  [system]");
+                settings_use_default_color();
+            }
             print("\n");
             found++;
         }
     }
     if (!found) print("  <empty>\n");
+    settings_use_default_color();
 }
 
 static void fs_tree_node(UINTN node, UINTN depth) {
@@ -1132,13 +1146,33 @@ static void fs_tree_node(UINTN node, UINTN depth) {
     UINTN spaces;
     for (index = 1; index < FS_MAX_NODES; index++) {
         if (gNodes[index].used && gNodes[index].parent == node) {
+            settings_use_default_color();
             for (spaces = 0; spaces < depth; spaces++) print("  ");
-            print(gNodes[index].type == FS_DIRECTORY ? "+ " : "- ");
-            print(gNodes[index].name);
+            if (gNodes[index].type == FS_DIRECTORY) {
+                settings_use_accent_color();
+                print("+ ");
+                print(gNodes[index].name);
+                settings_use_default_color();
+            } else {
+                print("- ");
+                print(gNodes[index].name);
+            }
             print("\n");
             if (gNodes[index].type == FS_DIRECTORY && depth < 12) fs_tree_node(index, depth + 1);
         }
     }
+    settings_use_default_color();
+}
+
+static void fs_tree(UINTN node) {
+    char path[FS_PATH_BYTES];
+    fs_path(node, path, sizeof(path));
+    if (gNodes[node].type == FS_DIRECTORY) settings_use_accent_color();
+    else settings_use_default_color();
+    print(path);
+    settings_use_default_color();
+    print("\n");
+    if (gNodes[node].type == FS_DIRECTORY) fs_tree_node(node, 1);
 }
 
 static const char *fs_easy_path(const char *name) {
@@ -1462,69 +1496,105 @@ static void settings_print_toggle(UINT8 enabled) {
     print(enabled ? "on" : "off");
 }
 
-static void settings_show(void) {
+static void settings_show(const char *notice) {
     settings_use_accent_color();
-    print("\n=== TinyArmOS Settings ===\n");
+    print("=== TinyArmOS Settings ===\n");
     settings_use_default_color();
+    print("Changes save automatically. Choose 0 when finished.\n\n");
     print("  1  Default text color : "); print(settings_color_name(gSettings.textColor)); print("\n");
-    print("  2  Accent/prompt color: "); print(settings_color_name(gSettings.accentColor)); print("\n");
+    print("  2  Accent color       : "); print(settings_color_name(gSettings.accentColor)); print("\n");
+    print("     Used for prompts, directories, and protected labels.\n");
     print("  3  Show path in prompt: "); settings_print_toggle(gSettings.showPromptPath); print("\n");
     print("  4  Startup directory  : "); print(gSettings.startupHome ? "/home" : "/"); print("\n");
     print("  5  Scrollback         : "); settings_print_toggle(gSettings.scrollback); print("\n");
     print("  6  Restore defaults\n");
-    print("  0  Save and exit\n");
+    print("  0  Return to shell\n");
+    if (notice && *notice) {
+        settings_use_accent_color();
+        print("\n");
+        print(notice);
+        print("\n");
+        settings_use_default_color();
+    }
 }
 
-static void settings_show_colors(void) {
+static void settings_show_colors(UINT8 selected) {
     UINT8 color;
-    print("Choose a foreground color (black is excluded):\n");
+    settings_use_accent_color();
+    print("=== Choose a Color ===\n");
+    settings_use_default_color();
+    print("Black is excluded because the console background is black.\n\n");
     for (color = 1; color <= 15U; color++) {
         gST->ConOut->SetAttribute(gST->ConOut, (UINTN)color);
-        print("  "); print_u64(color); print("  "); print(settings_color_name(color)); print("\n");
+        print(color == selected ? "  > " : "    ");
+        print_u64(color);
+        print("  ");
+        print(settings_color_name(color));
+        print("\n");
     }
     settings_use_default_color();
+    print("\n  0  Cancel\n");
 }
 
-static void settings_choose_color(UINT8 *target) {
+static int settings_choose_color(UINT8 *target) {
     char answer[32];
     UINT8 color;
-    settings_show_colors();
-    print("Color number: ");
+    gST->ConOut->ClearScreen(gST->ConOut);
+    settings_show_colors(*target);
+    print("\nColor number: ");
     read_line(answer, sizeof(answer));
-    if (!settings_parse_uint8(answer, &color) || color < 1U || color > 15U) {
-        print("Invalid color; choose a number from 1 through 15.\n");
-        return;
-    }
+    if (!settings_parse_uint8(answer, &color)) return -1;
+    if (!color) return 0;
+    if (color > 15U) return -1;
     *target = color;
-    if (target == &gSettings.textColor) settings_use_default_color();
-    else settings_use_accent_color();
-    print("Color preview: "); print(settings_color_name(color)); print("\n");
-    settings_use_default_color();
+    return 1;
+}
+
+static const char *settings_save_notice(void) {
+    return settings_save() ? "Saved automatically to /home/.tinyarmrc." :
+           "Applied for this boot; automatic save failed.";
 }
 
 static void command_settings(void) {
     char choice[32];
+    const char *notice = (const char *)0;
+    UINT8 previousScrollback = gScrollbackEnabled;
+    gScrollbackEnabled = 0;
     for (;;) {
-        settings_show();
-        print("Select: ");
+        int changed = 0;
+        gST->ConOut->ClearScreen(gST->ConOut);
+        settings_show(notice);
+        print("\nSelect: ");
         read_line(choice, sizeof(choice));
         if (streq(choice, "0")) {
-            int persisted = settings_save();
+            gScrollbackEnabled = previousScrollback;
             settings_apply_runtime();
-            print(persisted ? "Settings saved to /home/.tinyarmrc.\n" :
-                  "Settings applied for this boot; persistent save failed.\n");
+            gST->ConOut->ClearScreen(gST->ConOut);
+            settings_use_default_color();
+            print("Returned from Settings.\n");
             return;
         }
-        if (streq(choice, "1")) settings_choose_color(&gSettings.textColor);
-        else if (streq(choice, "2")) settings_choose_color(&gSettings.accentColor);
-        else if (streq(choice, "3")) gSettings.showPromptPath = (UINT8)!gSettings.showPromptPath;
-        else if (streq(choice, "4")) gSettings.startupHome = (UINT8)!gSettings.startupHome;
-        else if (streq(choice, "5")) gSettings.scrollback = (UINT8)!gSettings.scrollback;
-        else if (streq(choice, "6")) {
+        if (streq(choice, "1")) changed = settings_choose_color(&gSettings.textColor);
+        else if (streq(choice, "2")) changed = settings_choose_color(&gSettings.accentColor);
+        else if (streq(choice, "3")) {
+            gSettings.showPromptPath = (UINT8)!gSettings.showPromptPath;
+            changed = 1;
+        } else if (streq(choice, "4")) {
+            gSettings.startupHome = (UINT8)!gSettings.startupHome;
+            changed = 1;
+        } else if (streq(choice, "5")) {
+            gSettings.scrollback = (UINT8)!gSettings.scrollback;
+            changed = 1;
+        } else if (streq(choice, "6")) {
             settings_defaults();
-            settings_use_default_color();
-            print("Defaults restored. Choose 0 to save them.\n");
-        } else print("Unknown selection. Choose 0 through 6.\n");
+            changed = 1;
+        } else {
+            notice = "Unknown selection; choose 0 through 6.";
+            continue;
+        }
+        if (changed > 0) notice = settings_save_notice();
+        else if (changed < 0) notice = "Invalid color; choose 1 through 15.";
+        else notice = "Color change canceled.";
     }
 }
 
@@ -1696,7 +1766,7 @@ static void recovery_agent(void) {
             char *path = streq(line, "tree") ? (char *)"/" : skip_spaces(line + 5);
             int node = fs_resolve(path);
             if (node < 0) print("tree: path not found\n");
-            else { char full[FS_PATH_BYTES]; fs_path((UINTN)node, full, sizeof(full)); print(full); print("\n"); fs_tree_node((UINTN)node, 1); }
+            else fs_tree((UINTN)node);
         } else if (streq(line, "reset")) {
             char answer[16];
             print("Type RESET to erase all user files: ");
@@ -1762,7 +1832,7 @@ static void command_help(void) {
         "  fault PATH           diagnostic: corrupt a file checksum in RAM\n"
         "Application and system commands:\n"
         "  doom                 launch Freedoom; Q or F12 returns to the shell\n"
-        "  settings             configure persistent shell preferences\n"
+        "  settings             open the full-screen persistent settings UI\n"
         "  protect [status|unlock|lock] manage protected-node writes\n"
         "  update [check]       check for or install a verified GitHub release\n"
         "  recovery             open the Recovery Agent and its own help\n"
@@ -1837,22 +1907,15 @@ static void run_command(char *line) {
         char *path = streq(command, "tree") ? (char *)"" : skip_spaces(command + 5);
         int node = fs_resolve(path);
         if (node < 0) print("tree: path not found\n");
-        else {
-            char fullPath[FS_PATH_BYTES];
-            fs_path((UINTN)node, fullPath, sizeof(fullPath));
-            print(fullPath);
-            print("\n");
-            if (gNodes[node].type == FS_DIRECTORY) fs_tree_node((UINTN)node, 1);
-        }
+        else fs_tree((UINTN)node);
     } else if (streq(command, "sysfiles")) {
         int systemNode = fs_resolve("/system");
         int appsNode = fs_resolve("/apps");
         print("Critical OS files [");
         print(gProtectionUnlocked ? "UNLOCKED" : "LOCKED");
-        print("]:\n/system\n");
-        if (systemNode >= 0) fs_tree_node((UINTN)systemNode, 1);
-        print("/apps\n");
-        if (appsNode >= 0) fs_tree_node((UINTN)appsNode, 1);
+        print("]:\n");
+        if (systemNode >= 0) fs_tree((UINTN)systemNode);
+        if (appsNode >= 0) fs_tree((UINTN)appsNode);
         print("Use 'open /system/manifest.txt' for descriptions.\n");
     } else if (streq(command, "apps")) {
         int node = fs_resolve("/apps");
