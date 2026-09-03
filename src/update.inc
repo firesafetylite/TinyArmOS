@@ -901,7 +901,7 @@ static int update_valid_efi(const UINT8 *image, UINTN bytes) {
 
 static EFI_STATUS update_delete_file(const CHAR16 *path) {
     EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
-    EFI_STATUS status = gVolumeRoot->Open(gVolumeRoot, &file, (CHAR16 *)path,
+    EFI_STATUS status = gBootVolumeRoot->Open(gBootVolumeRoot, &file, (CHAR16 *)path,
         EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
     if (status == EFI_NOT_FOUND) return EFI_SUCCESS;
     if (status != EFI_SUCCESS || !file) return status;
@@ -914,7 +914,7 @@ static EFI_STATUS update_write_file(const CHAR16 *path, const UINT8 *data, UINTN
     UINTN offset = 0;
     status = update_delete_file(path);
     if (status != EFI_SUCCESS) return status;
-    status = gVolumeRoot->Open(gVolumeRoot, &file, (CHAR16 *)path,
+    status = gBootVolumeRoot->Open(gBootVolumeRoot, &file, (CHAR16 *)path,
         EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0);
     if (status != EFI_SUCCESS || !file) return status;
     while (offset < bytes) {
@@ -937,7 +937,7 @@ static EFI_STATUS update_read_file(const CHAR16 *path, UINT8 *data, UINTN capaci
     EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
     EFI_STATUS status;
     UINTN offset = 0;
-    status = gVolumeRoot->Open(gVolumeRoot, &file, (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
+    status = gBootVolumeRoot->Open(gBootVolumeRoot, &file, (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
     if (status != EFI_SUCCESS || !file) return status;
     while (offset < capacity) {
         UINTN chunk = capacity - offset;
@@ -958,7 +958,7 @@ static EFI_STATUS update_hash_file(const CHAR16 *path, UINTN *fileSize, UINT8 di
     UINT8 buffer[4096];
     EFI_STATUS status;
     UINTN total = 0;
-    status = gVolumeRoot->Open(gVolumeRoot, &file, (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
+    status = gBootVolumeRoot->Open(gBootVolumeRoot, &file, (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
     if (status != EFI_SUCCESS || !file) return status;
     update_sha256_init(&sha);
     for (;;) {
@@ -985,7 +985,7 @@ static EFI_STATUS update_install_image(const UINT8 *image, UINTN imageSize, cons
     UINTN verifiedSize = 0;
     UINT8 verifiedDigest[32];
     EFI_STATUS status;
-    if (!gVolumeRoot) return EFI_NOT_FOUND;
+    if (!gBootVolumeRoot) return EFI_NOT_FOUND;
     status = gST->BootServices->AllocatePool(2, UPDATE_MAX_IMAGE_BYTES, (void **)&oldImage);
     if (status != EFI_SUCCESS || !oldImage) return EFI_OUT_OF_RESOURCES;
     status = update_read_file(gUpdateBootPath, oldImage, UPDATE_MAX_IMAGE_BYTES, &oldSize);

@@ -86,6 +86,9 @@ class ShellSourceTests(unittest.TestCase):
         )
         commands = [
             "help",
+            "partitions",
+            "order system",
+            "order recovery",
             "scan",
             "repair",
             "rollback",
@@ -136,8 +139,10 @@ class ShellSourceTests(unittest.TestCase):
             "static void pre_os_environment(void)", "static void command_help(void)"
         )
         entry = source_block("EFI_STATUS EFIAPI EfiMain", "for (;;) {")
-        self.assertIn("Press R for the TinyArmOS Pre-OS Environment (2 seconds)", boot)
-        self.assertIn("return osMissing || !mounted || errors != 0;", boot)
+        menu = source_block("static int pre_os_boot_menu(void)", "static int boot_screen")
+        self.assertIn("Up/Down select, Enter boot, S save default, R recovery", menu)
+        self.assertIn("boot_order_save(recovery)", menu)
+        self.assertIn("return pre_os_boot_menu();", boot)
         self.assertIn("=== TinyArmOS Pre-OS Environment ===", pre_os)
         self.assertIn("TinyArmOS has not started", pre_os)
         self.assertIn("if (!gScrollbackEnabled) scrollback_enable();", pre_os)
@@ -155,7 +160,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("osMissing = storage_os_missing();", boot)
         self.assertIn("storage_path_exists(gFactoryInstallPath)", boot)
         self.assertIn("else if (!mounted && !snapshotFiles)", boot)
-        self.assertIn("OS MISSING - PRE-OS", boot)
+        self.assertIn("OS MISSING - OPENING PRE-OS ENVIRONMENT", boot)
         self.assertNotIn("fs_check(1, 0)", boot)
         self.assertIn("fs_check(1, 1);", repair)
         self.assertIn("fs_commit()", repair)
@@ -263,14 +268,15 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("gStorageReady = 0;", root_branch)
         self.assertIn("ResetSystem(EfiResetShutdown", root_branch)
         self.assertIn("The pre-OS environment remains", root_branch)
-        self.assertNotIn("gProtectionUnlocked", root_branch)
+        self.assertIn("rootRequest && !gProtectionUnlocked", remove_dispatch)
+        self.assertIn("use 'protect unlock'", remove_dispatch)
         self.assertNotIn("read_line(", root_branch)
         self.assertNotIn("fs_commit()", root_branch)
         self.assertNotIn("ERASE ROOT", root_branch)
 
     def test_os_wipe_uses_dedicated_volume_identity_and_recursive_delete(self) -> None:
-        self.assertIn('char16_equals_ascii(information->VolumeLabel, "TINYARMOS")', SOURCE)
-        self.assertIn("storage_path_exists(gLoadedImagePath)", SOURCE)
+        self.assertIn('storage_volume_has_label(gVolumeRoot, "TINYARMOS")', SOURCE)
+        self.assertIn('storage_volume_has_label(gBootVolumeRoot, "TINYARMOS")', SOURCE)
         wipe = source_block(
             "static int storage_wipe_directory(",
             "static int storage_delete_path(",
@@ -286,7 +292,17 @@ class ShellSourceTests(unittest.TestCase):
             wipe.index("child->Delete(child)"),
         )
 
-    def test_os_wipe_preserves_unrelated_files_on_shared_esp(self) -> None:
+    def test_split_layout_wipes_the_entire_system_partition(self) -> None:
+        wipe = source_block(
+            "static int storage_wipe_os(",
+            "static int storage_read_slot(",
+        )
+        self.assertIn("if (!gLegacySinglePartition)", wipe)
+        self.assertIn("storage_wipe_directory(gVolumeRoot, 99U", wipe)
+        self.assertIn("remainingCount", wipe)
+        self.assertNotIn("storage_set_os_missing", wipe.split("if (!gLegacySinglePartition)", 1)[1].split("if (!gDedicatedStorage)", 1)[0])
+
+    def test_legacy_shared_esp_wipe_preserves_unrelated_files(self) -> None:
         wipe = source_block(
             "static int storage_wipe_owned_files(",
             "static int storage_wipe_os(",

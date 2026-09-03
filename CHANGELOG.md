@@ -12,12 +12,14 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ### Changed
 
+- Split the image into an isolated `TINYRECOV` EFI partition and a separate `TINYARMOS` system/data partition, with a firmware-style boot menu and persistent partition default.
+- Changed protected `rm -rf /` to require `protect unlock` and empty the entire system partition without touching pre-OS recovery.
 - Deprecated the `.utm.zip` distribution and made `TinyArmOS.img` the sole maintained boot image; builds and releases no longer generate or validate a UTM bundle.
 - Changed host-update auto-discovery to prefer `.img` files while retaining explicit legacy `.utm` targets for migration, and compare EFI digests so same-version nightly builds remain discoverable.
 - Kept custom HTTP/TLS firmware as an optional developer build instead of a release-build dependency.
 - Moved all recovery and management commands into a pre-OS environment that runs before the TinyArmOS shell; **R**, a missing OS, or failed integrity verification enters it.
 - Removed the in-OS `bootmgr` command and retired `/recovery`, `/apps/recovery`, and `/apps/bootmgr` metadata during snapshot migration.
-- Kept the pre-OS entry point after `rm -rf /`, using an explicit missing-OS marker so recovery opens automatically instead of silently recreating the OS.
+- Kept the pre-OS entry point on its isolated partition after `rm -rf /`; an empty or invalid system partition opens recovery automatically instead of silently recreating the OS.
 - Made 256-line scrollback and all line, page, oldest, and live-output navigation controls available inside the pre-OS environment regardless of the normal shell setting.
 
 ## [0.1.4] - 2026-09-02

@@ -330,6 +330,7 @@ typedef struct {
 
 static EFI_SYSTEM_TABLE *gST;
 static EFI_FILE_PROTOCOL *gVolumeRoot;
+static EFI_FILE_PROTOCOL *gBootVolumeRoot;
 static UINT64 gStartTicks;
 static UINT64 gTimerHz;
 static UINT64 gCommands;
@@ -338,6 +339,7 @@ static UINT64 gSlotGeneration[2];
 static UINT8 gSlotValid[2];
 static UINT8 gStorageReady;
 static UINT8 gDedicatedStorage;
+static UINT8 gLegacySinglePartition;
 static UINT8 gProtectionUnlocked;
 static CHAR16 gLoadedImagePath[260];
 static UINTN gCwd;
@@ -684,6 +686,7 @@ static const CHAR16 gBootStagePath[] = {
 };
 static const CHAR16 gOsMissingPath[] = {'\\','T','I','N','Y','O','S','.','O','F','F',0};
 static const CHAR16 gFactoryInstallPath[] = {'\\','T','I','N','Y','O','S','.','N','E','W',0};
+static const CHAR16 gBootOrderPath[] = {'\\','B','O','O','T','O','R','D','.','C','F','G',0};
 static const CHAR16 gStartupPath[] = {'\\','S','T','A','R','T','U','P','.','N','S','H',0};
 static const CHAR16 gDoomWadPath[] = {'\\','D','O','O','M','U','.','W','A','D',0};
 static const CHAR16 gDoomConfigPath[] = {'\\','D','O','O','M','.','C','F','G',0};
@@ -741,15 +744,49 @@ static int storage_path_exists(const CHAR16 *path) {
     return 1;
 }
 
-static int storage_volume_is_dedicated(void) {
+static int storage_volume_has_label(EFI_FILE_PROTOCOL *root, const char *label) {
     UINT64 storage[64];
     EFI_FILE_SYSTEM_INFO *information = (EFI_FILE_SYSTEM_INFO *)(void *)storage;
     UINTN bytes = sizeof(storage);
     EFI_STATUS status;
-    if (!gVolumeRoot || !gLoadedImagePath[0]) return 0;
-    status = gVolumeRoot->GetInfo(gVolumeRoot, &gFileSystemInfoGuid, &bytes, information);
+    if (!root) return 0;
+    status = root->GetInfo(root, &gFileSystemInfoGuid, &bytes, information);
     if (status != EFI_SUCCESS || bytes < 38U || information->Size < 38U || information->Size > bytes) return 0;
-    return char16_equals_ascii(information->VolumeLabel, "TINYARMOS") && storage_path_exists(gLoadedImagePath);
+    return char16_equals_ascii(information->VolumeLabel, label);
+}
+
+static int storage_volume_is_dedicated(void) {
+    return storage_volume_has_label(gVolumeRoot, "TINYARMOS");
+}
+
+static int boot_order_default_recovery(void) {
+    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
+    UINT8 value = 0;
+    UINTN bytes = 1;
+    EFI_STATUS status;
+    if (!gBootVolumeRoot) return 0;
+    status = gBootVolumeRoot->Open(gBootVolumeRoot, &file, (CHAR16 *)gBootOrderPath,
+        EFI_FILE_MODE_READ, 0);
+    if (status != EFI_SUCCESS || !file) return 0;
+    status = file->Read(file, &bytes, &value);
+    file->Close(file);
+    return status == EFI_SUCCESS && bytes == 1 && value == 'R';
+}
+
+static int boot_order_save(int recovery) {
+    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
+    UINT8 value = (UINT8)(recovery ? 'R' : 'S');
+    UINTN bytes = 1;
+    EFI_STATUS status;
+    if (!gBootVolumeRoot) return 0;
+    status = gBootVolumeRoot->Open(gBootVolumeRoot, &file, (CHAR16 *)gBootOrderPath,
+        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0);
+    if (status != EFI_SUCCESS || !file) return 0;
+    status = file->SetPosition(file, 0);
+    if (status == EFI_SUCCESS) status = file->Write(file, &bytes, &value);
+    if (status == EFI_SUCCESS && bytes == 1) status = file->Flush(file);
+    file->Close(file);
+    return status == EFI_SUCCESS && bytes == 1;
 }
 
 static int storage_init(EFI_HANDLE imageHandle) {
@@ -757,15 +794,54 @@ static int storage_init(EFI_HANDLE imageHandle) {
     static EFI_GUID simpleFsGuid = {0x964e5b22, 0x6459, 0x11d2, {0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
     EFI_LOADED_IMAGE_PROTOCOL *loadedImage = (EFI_LOADED_IMAGE_PROTOCOL *)0;
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *filesystem = (EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *)0;
+    EFI_HANDLE *handles = (EFI_HANDLE *)0;
+    UINTN handleCount = 0;
+    UINTN index;
     EFI_STATUS status;
+    gVolumeRoot = (EFI_FILE_PROTOCOL *)0;
+    gBootVolumeRoot = (EFI_FILE_PROTOCOL *)0;
     gDedicatedStorage = 0;
+    gLegacySinglePartition = 0;
     status = gST->BootServices->HandleProtocol(imageHandle, &loadedImageGuid, (void **)&loadedImage);
     if (status != EFI_SUCCESS || !loadedImage) return 0;
     storage_capture_loaded_path(loadedImage->FilePath);
     status = gST->BootServices->HandleProtocol(loadedImage->DeviceHandle, &simpleFsGuid, (void **)&filesystem);
     if (status != EFI_SUCCESS || !filesystem) return 0;
-    status = filesystem->OpenVolume(filesystem, &gVolumeRoot);
-    if (status != EFI_SUCCESS || !gVolumeRoot) return 0;
+    status = filesystem->OpenVolume(filesystem, &gBootVolumeRoot);
+    if (status != EFI_SUCCESS || !gBootVolumeRoot) return 0;
+    if (storage_volume_has_label(gBootVolumeRoot, "TINYARMOS")) {
+        gVolumeRoot = gBootVolumeRoot;
+        gLegacySinglePartition = 1;
+    } else {
+        status = gST->BootServices->LocateHandleBuffer(0, (EFI_GUID *)0, (void *)0,
+            &handleCount, &handles);
+        if (status == EFI_SUCCESS && handles) {
+            for (index = 0; index < handleCount; index++)
+                gST->BootServices->ConnectController(handles[index], (EFI_HANDLE *)0, (void *)0, 1);
+            gST->BootServices->FreePool(handles);
+            handles = (EFI_HANDLE *)0;
+            handleCount = 0;
+        }
+        status = gST->BootServices->LocateHandleBuffer(2, &simpleFsGuid, (void *)0,
+            &handleCount, &handles);
+        if (status == EFI_SUCCESS && handles) {
+            for (index = 0; index < handleCount; index++) {
+                EFI_FILE_PROTOCOL *candidateRoot = (EFI_FILE_PROTOCOL *)0;
+                filesystem = (EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *)0;
+                if (gST->BootServices->HandleProtocol(handles[index], &simpleFsGuid,
+                        (void **)&filesystem) != EFI_SUCCESS || !filesystem ||
+                    filesystem->OpenVolume(filesystem, &candidateRoot) != EFI_SUCCESS ||
+                    !candidateRoot) continue;
+                if (storage_volume_has_label(candidateRoot, "TINYARMOS")) {
+                    gVolumeRoot = candidateRoot;
+                    break;
+                }
+                candidateRoot->Close(candidateRoot);
+            }
+            gST->BootServices->FreePool(handles);
+        }
+    }
+    if (!gVolumeRoot) return 0;
     gDedicatedStorage = (UINT8)storage_volume_is_dedicated();
     return 1;
 }
@@ -1006,7 +1082,9 @@ static int storage_clear_os_missing(void) {
 }
 
 static int storage_os_missing(void) {
-    return !gStorageReady || storage_path_exists(gOsMissingPath);
+    if (!gStorageReady || storage_path_exists(gOsMissingPath)) return 1;
+    return !storage_path_exists(gSlot0Path) && !storage_path_exists(gSlot1Path) &&
+        !storage_path_exists(gFactoryInstallPath);
 }
 
 static int storage_wipe_owned_files(UINTN *removed, UINTN *failures) {
@@ -1030,9 +1108,23 @@ static int storage_wipe_owned_files(UINTN *removed, UINTN *failures) {
 
 static int storage_wipe_os(UINTN *removed, UINTN *failures) {
     int complete;
+    STORAGE_ENTRY *remaining = (STORAGE_ENTRY *)0;
+    UINTN remainingCount = 0;
     *removed = 0;
     *failures = 0;
     if (!gVolumeRoot) return 0;
+    if (!gLegacySinglePartition) {
+        complete = storage_wipe_directory(gVolumeRoot, 99U, removed, failures);
+        if (!storage_collect_entries(gVolumeRoot, &remaining, &remainingCount)) {
+            (*failures)++;
+            complete = 0;
+        } else if (remainingCount) {
+            (*failures) += remainingCount;
+            complete = 0;
+        }
+        if (remaining) gST->BootServices->FreePool(remaining);
+        return complete && *failures == 0;
+    }
     if (!gDedicatedStorage) return storage_wipe_owned_files(removed, failures);
     complete = storage_wipe_directory(gVolumeRoot, 0, removed, failures);
     if (!storage_set_os_missing()) {
@@ -1745,12 +1837,8 @@ static int fs_commit(void) {
     return 1;
 }
 
-static int poll_key(char *character) {
-    EFI_INPUT_KEY key;
-    EFI_STATUS status = gST->ConIn->ReadKeyStroke(gST->ConIn, &key);
-    if (status != EFI_SUCCESS || !key.UnicodeChar) return 0;
-    *character = (char)key.UnicodeChar;
-    return 1;
+static int poll_input_key(EFI_INPUT_KEY *key) {
+    return gST->ConIn->ReadKeyStroke(gST->ConIn, key) == EFI_SUCCESS;
 }
 
 static void read_line(char *line, UINTN capacity) {
@@ -2127,14 +2215,41 @@ static int pre_os_repair(void) {
     return 1;
 }
 
+static int pre_os_boot_menu(void) {
+    EFI_INPUT_KEY key;
+    int recovery = boot_order_default_recovery();
+    UINT64 deadline = timer_count() + gTimerHz * 2U;
+    print("\n  Boot partitions:\n");
+    print(recovery ? "    1  TinyArmOS System\n" : "  > 1  TinyArmOS System\n");
+    print(recovery ? "  > 2  Pre-OS Recovery\n" : "    2  Pre-OS Recovery\n");
+    print("  Up/Down select, Enter boot, S save default, R recovery (2 seconds)\n");
+    while (timer_count() < deadline) {
+        if (!poll_input_key(&key)) {
+            __asm__ volatile("yield");
+            continue;
+        }
+        if (key.ScanCode == 1 || key.ScanCode == 2) {
+            recovery = !recovery;
+            print(recovery ? "  Selected: Pre-OS Recovery\n" : "  Selected: TinyArmOS System\n");
+            deadline = timer_count() + gTimerHz * 5U;
+        } else if (key.UnicodeChar == '1') return 0;
+        else if (key.UnicodeChar == '2' || key.UnicodeChar == 'r' || key.UnicodeChar == 'R') return 1;
+        else if (key.UnicodeChar == '\r' || key.UnicodeChar == '\n') return recovery;
+        else if (key.UnicodeChar == 's' || key.UnicodeChar == 'S') {
+            print(boot_order_save(recovery) ? "  Default boot partition saved.\n" :
+                  "  Could not save the default boot partition.\n");
+            deadline = timer_count() + gTimerHz * 5U;
+        }
+    }
+    return recovery;
+}
+
 static int boot_screen(EFI_HANDLE imageHandle) {
     int mounted = 0;
     int errors = 1;
     int osMissing = 1;
     int snapshotFiles = 0;
     int factoryInstall = 0;
-    char key = 0;
-    UINT64 deadline;
     gST->ConOut->ClearScreen(gST->ConOut);
     gST->ConOut->SetAttribute(gST->ConOut, 0x0b);
     print(
@@ -2171,26 +2286,27 @@ static int boot_screen(EFI_HANDLE imageHandle) {
     boot_stage(4, "system integrity and checksums", mounted && errors == 0);
     if (mounted && errors == 0 && fs_restore_system()) fs_commit();
     boot_stage(5, "TinyArmOS operating system", !osMissing && mounted && errors == 0);
-    print("\n  Press R for the TinyArmOS Pre-OS Environment (2 seconds) ");
-    deadline = timer_count() + gTimerHz * 2;
-    while (timer_count() < deadline) {
-        if (poll_key(&key) && (key == 'r' || key == 'R')) {
-            print("PRE-OS\n");
-            return 1;
-        }
-        __asm__ volatile("yield");
+    if (osMissing) {
+        print("\n  OS MISSING - OPENING PRE-OS ENVIRONMENT\n");
+        delay_ms(150);
+        return 1;
     }
-    if (osMissing) print("OS MISSING - PRE-OS\n");
-    else if (!mounted || errors) print("RECOVERY REQUIRED - PRE-OS\n");
-    else print("BOOT\n");
-    delay_ms(150);
-    return osMissing || !mounted || errors != 0;
+    if (!mounted || errors) {
+        print("\n  RECOVERY REQUIRED - OPENING PRE-OS ENVIRONMENT\n");
+        delay_ms(150);
+        return 1;
+    }
+    return pre_os_boot_menu();
 }
 
 static void pre_os_help(void) {
     print(
         "Pre-OS commands:\n"
         "  help             show every pre-OS command\n"
+        "  partitions       list recovery and system partitions\n"
+        "  order            show the default boot partition\n"
+        "  order system     make TinyArmOS System the default\n"
+        "  order recovery   make Pre-OS Recovery the default\n"
         "  scan             verify nodes, checksums, and snapshots\n"
         "  repair           repair metadata and restore system files\n"
         "  rollback         load the previous valid disk snapshot\n"
@@ -2203,7 +2319,8 @@ static void pre_os_help(void) {
         "  reset            erase MiniFS2 after confirmation\n"
         "  scroll           show scrollback status and keyboard controls\n"
         "  scroll clear     erase retained scrollback\n"
-        "  boot             verify and start TinyArmOS\n"
+        "  boot [system]    verify and start TinyArmOS\n"
+        "  boot recovery    remain in this environment\n"
         "  reboot           restart TinyArmOS\n"
         "  shutdown         power off the machine\n"
     );
@@ -2227,6 +2344,17 @@ static void pre_os_environment(void) {
         read_line(line, sizeof(line));
         if (streq(line, "help")) {
             pre_os_help();
+        } else if (streq(line, "partitions")) {
+            print("1  TINYRECOV  FAT16  Pre-OS Recovery (protected)\n");
+            print(gStorageReady ? "2  TINYARMOS  FAT32  TinyArmOS System\n" :
+                  "2  TINYARMOS  unavailable\n");
+        } else if (streq(line, "order")) {
+            print("Default boot partition: ");
+            print(boot_order_default_recovery() ? "Pre-OS Recovery\n" : "TinyArmOS System\n");
+        } else if (streq(line, "order system") || streq(line, "order recovery")) {
+            int recovery = streq(line, "order recovery");
+            print(boot_order_save(recovery) ? "Default boot partition saved.\n" :
+                  "Could not save the default boot partition.\n");
         } else if (streq(line, "scan")) {
             print(storage_os_missing() ? "TinyArmOS installation: missing\n" :
                   "TinyArmOS installation: present\n");
@@ -2297,8 +2425,10 @@ static void pre_os_environment(void) {
         } else if (streq(line, "scroll clear")) {
             scrollback_reset();
             print("scrollback cleared\n");
-        } else if (streq(line, "boot")) {
+        } else if (streq(line, "boot") || streq(line, "boot system")) {
             if (pre_os_bootable(1)) return;
+        } else if (streq(line, "boot recovery")) {
+            print("Already running from the Pre-OS Recovery partition.\n");
         } else if (streq(line, "reboot")) {
             gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, (void *)0);
             for (;;) __asm__ volatile("wfe");
@@ -2526,7 +2656,9 @@ static void run_command(char *line) {
         int rootRequest = recursive && streq(path, "/");
         int node = rootRequest ? (int)FS_ROOT : (*path ? fs_resolve(path) : -1);
         if (node < 0) print("remove: path not found\n");
-        else if (rootRequest) {
+        else if (rootRequest && !gProtectionUnlocked) {
+            print("rm -rf /: protected system is locked (use 'protect unlock')\n");
+        } else if (rootRequest) {
             UINTN removed = 0;
             UINTN failures = 0;
             int complete;
@@ -2548,7 +2680,7 @@ static void run_command(char *line) {
             gGeneration = 0;
             print("removed ");
             print_u64(removed);
-            print(" EFI-volume entries\n");
+            print(" system-partition entries\n");
             if (!complete) {
                 print("rm -rf /: PARTIAL FAILURE; ");
                 print_u64(failures);

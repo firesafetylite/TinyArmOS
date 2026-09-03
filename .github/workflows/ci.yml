@@ -59,7 +59,7 @@ jobs:
           strings build/BOOTAA64.EFI | grep -Fq 'rm -rf /: destroying TinyArmOS now'
           strings build/BOOTAA64.EFI | grep -Fq 'The pre-OS environment remains and will open at the next boot.'
           strings build/BOOTAA64.EFI | grep -Fq '=== TinyArmOS Pre-OS Environment ==='
-          strings build/BOOTAA64.EFI | grep -Fq 'Press R for the TinyArmOS Pre-OS Environment'
+          strings build/BOOTAA64.EFI | grep -Fq 'Up/Down select, Enter boot, S save default, R recovery'
           ! strings build/BOOTAA64.EFI | grep -Fq 'bootmgr              open'
           ! strings build/BOOTAA64.EFI | grep -Fq 'Recovery Agent'
           ! strings build/BOOTAA64.EFI | grep -Fq 'command: recovery'
@@ -73,11 +73,13 @@ jobs:
           updater = runpy.run_path("tinyarmos", run_name="ci_validation")
           image = Path("build/TinyArmOS.img").read_bytes()
           assert image[512:520] == b"EFI PART"
-          assert image[2048 * 512 + 82:2048 * 512 + 90] == b"FAT32   "
-          disk = updater["Fat32Image"](image)
-          efi = disk.read_file(updater["BOOT_PATH"])
+          recovery = updater["Fat32Image"](image, 0)
+          system = updater["Fat32Image"](image, 1)
+          assert recovery.fat_bits == 16
+          assert system.fat_bits == 32
+          efi = recovery.read_file(updater["BOOT_PATH"])
           updater["validate_efi"](efi)
           assert updater["embedded_channel"](efi) == "main"
-          assert disk.read_file((b"TINYOS  NEW",)) == b"Initialize TinyArmOS on first boot\n"
-          assert disk.read_file((b"DOOMU   WAD",)).startswith(b"IWAD")
+          assert system.read_file((b"TINYOS  NEW",)) == b"Initialize TinyArmOS on first boot\n"
+          assert system.read_file((b"DOOMU   WAD",)).startswith(b"IWAD")
           PY
