@@ -334,6 +334,8 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("partition_rename(partition", pre_os)
         self.assertIn("gFatPartitionGuid", PARTITION_SOURCE)
         self.assertIn("partition_format_fat16", PARTITION_SOURCE)
+        self.assertIn('memory_copy(sector + 32U, "TINYOS  NEW", 11U)', PARTITION_SOURCE)
+        self.assertIn("sector[32U + 11U] = 0x20", PARTITION_SOURCE)
         self.assertLess(
             PARTITION_SOURCE.index("disk->backupEntriesLba"),
             PARTITION_SOURCE.index("disk->primaryEntriesLba", PARTITION_SOURCE.index("static int partition_disk_commit")),

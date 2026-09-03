@@ -79,7 +79,7 @@ boot [N]                       verify and start the selected partition
 reboot/shutdown                restart or power off
 ```
 
-Partition names are 1–11 characters using letters, digits, `_`, or `-`; names are normalized to uppercase and must be unique. Partition creation and naming update both GPT copies and FAT metadata, and require a reboot before firmware volume discovery is refreshed. Until that reboot, the new volume is shown as requiring activation; this does not mean partition creation failed. The recovery partition rejects every user-targeted mutation.
+Partition names are 1–11 characters using letters, digits, `_`, or `-`; names are normalized to uppercase and must be unique. Partition creation writes a factory-install marker along with both GPT copies and FAT metadata. After the required firmware reboot, TinyArmOS initializes the new volume automatically instead of reporting that its OS is unavailable. Until that reboot, the new volume is shown as requiring activation; this does not mean partition creation failed. The recovery partition rejects every user-targeted mutation.
 
 From the regular TinyArmOS shell, `partitions` provides the same numbered list in read-only form and tells you to reboot and press **R** for management. Creation, naming, repair, reset, rollback, boot-order changes, and recovery-partition access remain pre-OS-only.
 

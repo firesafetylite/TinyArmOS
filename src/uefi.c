@@ -2573,7 +2573,7 @@ static void pre_os_environment(void) {
             } else {
                 print("Created partition "); print_u64(created); print(" named ");
                 print(gPartitionNames[created - 1U]);
-                print(". Reboot before using it.\n");
+                print(". Reboot once; TinyArmOS will initialize it automatically.\n");
             }
         } else if (starts_with(line, "partition name ")) {
             char *arguments = skip_spaces(line + 15);

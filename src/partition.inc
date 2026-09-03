@@ -286,6 +286,8 @@ static int partition_format_fat16(EFI_BLOCK_IO_PROTOCOL *io, UINT64 start, UINT6
     memory_zero(sector, sizeof(sector));
     for (index = 0; index < 11U; index++) sector[index] = label[index] ? (UINT8)label[index] : ' ';
     sector[11] = 0x08;
+    memory_copy(sector + 32U, "TINYOS  NEW", 11U);
+    sector[32U + 11U] = 0x20;
     lba = start + 1U + (UINT64)fatSectors * 2U;
     if (partition_write_blocks(io, lba, GPT_SECTOR_SIZE, sector) != EFI_SUCCESS) return 0;
     return io->FlushBlocks(io) == EFI_SUCCESS;

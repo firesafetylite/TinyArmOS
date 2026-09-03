@@ -12,7 +12,7 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 - Redraw the interrupted-startup partition selector in place instead of appending a new output line for every selection.
 - Document and validate the persistent UTM PFlash arrangement that keeps HTTP/TLS-capable firmware independent from TinyArmOS disk updates.
-- Clarify that a newly created partition requires one firmware reboot before it becomes an available volume.
+- Seed newly created partitions for automatic first-boot TinyArmOS initialization, eliminating the misleading unavailable-OS result after their required firmware reboot.
 
 ## [0.1.5] - 2026-09-03
 
