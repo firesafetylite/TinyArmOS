@@ -2218,12 +2218,11 @@ static int pre_os_repair(void) {
 static int pre_os_boot_menu(void) {
     EFI_INPUT_KEY key;
     int recovery = boot_order_default_recovery();
-    UINT64 deadline = timer_count() + gTimerHz * 2U;
-    print("\n  Boot partitions:\n");
+    print("\n  === Partition Boot Manager ===\n");
     print(recovery ? "    1  TinyArmOS System\n" : "  > 1  TinyArmOS System\n");
     print(recovery ? "  > 2  Pre-OS Recovery\n" : "    2  Pre-OS Recovery\n");
-    print("  Up/Down select, Enter boot, S save default, R recovery (2 seconds)\n");
-    while (timer_count() < deadline) {
+    print("  Up/Down select, Enter boot, S save default, R recovery\n");
+    for (;;) {
         if (!poll_input_key(&key)) {
             __asm__ volatile("yield");
             continue;
@@ -2231,15 +2230,29 @@ static int pre_os_boot_menu(void) {
         if (key.ScanCode == 1 || key.ScanCode == 2) {
             recovery = !recovery;
             print(recovery ? "  Selected: Pre-OS Recovery\n" : "  Selected: TinyArmOS System\n");
-            deadline = timer_count() + gTimerHz * 5U;
         } else if (key.UnicodeChar == '1') return 0;
         else if (key.UnicodeChar == '2' || key.UnicodeChar == 'r' || key.UnicodeChar == 'R') return 1;
         else if (key.UnicodeChar == '\r' || key.UnicodeChar == '\n') return recovery;
-        else if (key.UnicodeChar == 's' || key.UnicodeChar == 'S') {
+        else if (key.UnicodeChar == 's' || key.UnicodeChar == 'S')
             print(boot_order_save(recovery) ? "  Default boot partition saved.\n" :
                   "  Could not save the default boot partition.\n");
-            deadline = timer_count() + gTimerHz * 5U;
+    }
+}
+
+static int pre_os_boot_prompt(void) {
+    EFI_INPUT_KEY key;
+    int recovery = boot_order_default_recovery();
+    UINT64 deadline = timer_count() + gTimerHz * 2U;
+    print("\n  Default: ");
+    print(recovery ? "Pre-OS Recovery\n" : "TinyArmOS System\n");
+    print("  Press Enter to interrupt boot and open the partition menu, or R for recovery.\n");
+    while (timer_count() < deadline) {
+        if (!poll_input_key(&key)) {
+            __asm__ volatile("yield");
+            continue;
         }
+        if (key.UnicodeChar == 'r' || key.UnicodeChar == 'R') return 1;
+        if (key.UnicodeChar == '\r' || key.UnicodeChar == '\n') return pre_os_boot_menu();
     }
     return recovery;
 }
@@ -2296,7 +2309,7 @@ static int boot_screen(EFI_HANDLE imageHandle) {
         delay_ms(150);
         return 1;
     }
-    return pre_os_boot_menu();
+    return pre_os_boot_prompt();
 }
 
 static void pre_os_help(void) {
@@ -2305,8 +2318,7 @@ static void pre_os_help(void) {
         "  help             show every pre-OS command\n"
         "  partitions       list recovery and system partitions\n"
         "  order            show the default boot partition\n"
-        "  order system     make TinyArmOS System the default\n"
-        "  order recovery   make Pre-OS Recovery the default\n"
+        "  order N          set partition 1 or 2 as the default\n"
         "  scan             verify nodes, checksums, and snapshots\n"
         "  repair           repair metadata and restore system files\n"
         "  rollback         load the previous valid disk snapshot\n"
@@ -2319,8 +2331,7 @@ static void pre_os_help(void) {
         "  reset            erase MiniFS2 after confirmation\n"
         "  scroll           show scrollback status and keyboard controls\n"
         "  scroll clear     erase retained scrollback\n"
-        "  boot [system]    verify and start TinyArmOS\n"
-        "  boot recovery    remain in this environment\n"
+        "  boot             verify and start TinyArmOS\n"
         "  reboot           restart TinyArmOS\n"
         "  shutdown         power off the machine\n"
     );
@@ -2351,10 +2362,12 @@ static void pre_os_environment(void) {
         } else if (streq(line, "order")) {
             print("Default boot partition: ");
             print(boot_order_default_recovery() ? "Pre-OS Recovery\n" : "TinyArmOS System\n");
-        } else if (streq(line, "order system") || streq(line, "order recovery")) {
-            int recovery = streq(line, "order recovery");
+        } else if (streq(line, "order 1") || streq(line, "order 2")) {
+            int recovery = streq(line, "order 2");
             print(boot_order_save(recovery) ? "Default boot partition saved.\n" :
                   "Could not save the default boot partition.\n");
+        } else if (starts_with(line, "order ")) {
+            print("order: choose partition 1 or 2\n");
         } else if (streq(line, "scan")) {
             print(storage_os_missing() ? "TinyArmOS installation: missing\n" :
                   "TinyArmOS installation: present\n");
@@ -2425,10 +2438,8 @@ static void pre_os_environment(void) {
         } else if (streq(line, "scroll clear")) {
             scrollback_reset();
             print("scrollback cleared\n");
-        } else if (streq(line, "boot") || streq(line, "boot system")) {
+        } else if (streq(line, "boot")) {
             if (pre_os_bootable(1)) return;
-        } else if (streq(line, "boot recovery")) {
-            print("Already running from the Pre-OS Recovery partition.\n");
         } else if (streq(line, "reboot")) {
             gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, (void *)0);
             for (;;) __asm__ volatile("wfe");

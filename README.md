@@ -53,11 +53,13 @@ Verified firmware startup checks:
 4. Filesystem structure and every active file checksum
 5. Whether the TinyArmOS operating system is bootable
 
-This environment runs before the normal TinyArmOS shell. Its boot menu lists the Recovery and System partitions; use Up/Down and Enter to choose, **S** to save the selected default boot partition, or **R** to enter recovery immediately. It also opens automatically when TinyArmOS is missing, its system snapshot cannot be mounted, or integrity verification fails. Startup never silently repairs a damaged installation.
+This environment runs before the normal TinyArmOS shell. Press **Enter** during the two-second startup prompt to interrupt boot and open its partition menu. Use Up/Down and Enter to choose, **S** to save the selected default, or **R** to enter recovery immediately. In recovery, `order 1` selects TinyArmOS System and `order 2` selects Pre-OS Recovery as the persistent default. It also opens automatically when TinyArmOS is missing, its system snapshot cannot be mounted, or integrity verification fails. Startup never silently repairs a damaged installation.
 
 The former recovery methods and management commands now exist only in this pre-OS environment; there is no `bootmgr` command inside TinyArmOS. The environment remains available after an OS wipe and always provides 256 lines of scrollback with Up/Down line scrolling, PageUp/PageDown paging, Home for the oldest output, and End or Esc to return live.
 
 ```text
+partitions                     list bootable partitions
+order N                        set partition 1 or 2 as default
 scan                           verify MiniFS2 and both snapshots
 repair                         repair or reconstruct system files
 rollback                       load the previous valid snapshot

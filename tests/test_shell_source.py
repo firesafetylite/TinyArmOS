@@ -87,8 +87,7 @@ class ShellSourceTests(unittest.TestCase):
         commands = [
             "help",
             "partitions",
-            "order system",
-            "order recovery",
+            "order N",
             "scan",
             "repair",
             "rollback",
@@ -141,8 +140,9 @@ class ShellSourceTests(unittest.TestCase):
         entry = source_block("EFI_STATUS EFIAPI EfiMain", "for (;;) {")
         menu = source_block("static int pre_os_boot_menu(void)", "static int boot_screen")
         self.assertIn("Up/Down select, Enter boot, S save default, R recovery", menu)
+        self.assertIn("Press Enter to interrupt boot and open the partition menu", menu)
         self.assertIn("boot_order_save(recovery)", menu)
-        self.assertIn("return pre_os_boot_menu();", boot)
+        self.assertIn("return pre_os_boot_prompt();", boot)
         self.assertIn("=== TinyArmOS Pre-OS Environment ===", pre_os)
         self.assertIn("TinyArmOS has not started", pre_os)
         self.assertIn("if (!gScrollbackEnabled) scrollback_enable();", pre_os)
@@ -213,7 +213,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("fs_commit();", migration_commit)
 
     def test_recovery_is_pre_os_only_not_an_in_os_command(self) -> None:
-        for removed in ("Recovery Agent", "recovery_agent", "recovery_help", "Boot Manager"):
+        for removed in ("Recovery Agent", "recovery_agent", "recovery_help", "TinyArmOS Boot Manager"):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, SOURCE)
         dispatch = source_block(
