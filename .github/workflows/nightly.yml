@@ -62,6 +62,7 @@ jobs:
           image = Path("build/TinyArmOS.img").read_bytes()
           disk = updater["Fat32Image"](image)
           assert disk.read_file(updater["BOOT_PATH"]) == efi
+          assert disk.read_file((b"TINYOS  NEW",)) == b"Initialize TinyArmOS on first boot\n"
           assert disk.read_file((b"DOOMU   WAD",)).startswith(b"IWAD")
           print(version)
           PY

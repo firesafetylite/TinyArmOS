@@ -82,6 +82,7 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
     efi = efi_path.read_bytes()
     freedoom = freedoom_path.read_bytes()
     startup = b"fs0:\\EFI\\BOOT\\BOOTAA64.EFI\r\n"
+    factory_install = b"Initialize TinyArmOS on first boot\n"
     total_sectors = IMAGE_BYTES // SECTOR
     backup_header_lba = total_sectors - 1
     backup_entries_lba = backup_header_lba - GPT_ENTRY_SECTORS
@@ -177,12 +178,15 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
     image[volume_base + SECTOR : volume_base + 2 * SECTOR] = fsinfo
     image[volume_base + 7 * SECTOR : volume_base + 8 * SECTOR] = fsinfo
 
-    # Allocate clusters: 2=root, 3=EFI, 4=BOOT, then EFI, startup.nsh, and Freedoom.
+    # Allocate clusters: 2=root, 3=EFI, 4=BOOT, then EFI, startup.nsh,
+    # the one-shot factory-install marker, and Freedoom.
     next_cluster = 5
     efi_clusters = max(1, math.ceil(len(efi) / SECTOR))
     efi_first = next_cluster
     next_cluster += efi_clusters
     startup_first = next_cluster
+    next_cluster += 1
+    factory_install_first = next_cluster
     next_cluster += 1
     freedoom_clusters = max(1, math.ceil(len(freedoom) / SECTOR))
     freedoom_first = next_cluster
@@ -197,6 +201,7 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
     for cluster in range(efi_first, efi_first + efi_clusters):
         fat_entries[cluster] = cluster + 1 if cluster + 1 < efi_first + efi_clusters else 0x0FFFFFFF
     fat_entries[startup_first] = 0x0FFFFFFF
+    fat_entries[factory_install_first] = 0x0FFFFFFF
     for cluster in range(freedoom_first, freedoom_first + freedoom_clusters):
         fat_entries[cluster] = cluster + 1 if cluster + 1 < freedoom_first + freedoom_clusters else 0x0FFFFFFF
     fat = bytearray(fat_sectors * SECTOR)
@@ -219,6 +224,7 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
     root = directory([
         short_entry(b"EFI        ", 0x10, 3),
         short_entry(b"STARTUP NSH", 0x20, startup_first, len(startup)),
+        short_entry(b"TINYOS  NEW", 0x20, factory_install_first, len(factory_install)),
         short_entry(b"DOOMU   WAD", 0x20, freedoom_first, len(freedoom)),
     ])
     efi_dir = directory([
@@ -237,6 +243,7 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
     for index in range(efi_clusters):
         put_cluster(efi_first + index, efi[index * SECTOR : (index + 1) * SECTOR])
     put_cluster(startup_first, startup)
+    put_cluster(factory_install_first, factory_install)
     for index in range(freedoom_clusters):
         put_cluster(freedoom_first + index, freedoom[index * SECTOR : (index + 1) * SECTOR])
 

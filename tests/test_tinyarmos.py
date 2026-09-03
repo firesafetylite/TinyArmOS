@@ -207,6 +207,10 @@ class UpdaterTests(unittest.TestCase):
             before = UPDATER["Fat32Image"](disk_path.read_bytes())
             self.assertEqual(before.read_file(UPDATER["BOOT_PATH"]), old_efi)
             self.assertEqual(before.read_file((b"DOOMU   WAD",)), wad)
+            self.assertEqual(
+                before.read_file((b"TINYOS  NEW",)),
+                b"Initialize TinyArmOS on first boot\n",
+            )
             startup = before.read_file((b"STARTUP NSH",))
 
             backup = UPDATER["install_image"]("disk", disk_path, new_efi)
@@ -214,6 +218,10 @@ class UpdaterTests(unittest.TestCase):
             after = UPDATER["Fat32Image"](disk_path.read_bytes())
             self.assertEqual(after.read_file(UPDATER["BOOT_PATH"]), new_efi)
             self.assertEqual(after.read_file((b"DOOMU   WAD",)), wad)
+            self.assertEqual(
+                after.read_file((b"TINYOS  NEW",)),
+                b"Initialize TinyArmOS on first boot\n",
+            )
             self.assertEqual(after.read_file((b"STARTUP NSH",)), startup)
             backed_up = UPDATER["Fat32Image"](backup.read_bytes())
             self.assertEqual(backed_up.read_file(UPDATER["BOOT_PATH"]), old_efi)

@@ -72,7 +72,6 @@ class ShellSourceTests(unittest.TestCase):
             "settings",
             "protect [status|unlock|lock]",
             "update [check] [main|nightly]",
-            "bootmgr",
             "reboot",
             "shutdown",
         ]
@@ -80,10 +79,10 @@ class ShellSourceTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn(command, help_text)
 
-    def test_boot_manager_help_documents_every_command(self) -> None:
+    def test_pre_os_help_documents_every_recovery_command(self) -> None:
         help_text = source_block(
-            "static void boot_manager_help(void)",
-            "static void boot_manager_shell(void)",
+            "static void pre_os_help(void)",
+            "static void pre_os_environment(void)",
         )
         commands = [
             "help",
@@ -99,7 +98,7 @@ class ShellSourceTests(unittest.TestCase):
             "reset",
             "scroll",
             "scroll clear",
-            "continue",
+            "boot",
             "reboot",
             "shutdown",
         ]
@@ -107,46 +106,62 @@ class ShellSourceTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn(command, help_text)
 
-    def test_startup_runs_the_same_integrity_scan_as_boot_manager(self) -> None:
+    def test_startup_and_pre_os_environment_share_the_integrity_scan(self) -> None:
         scan = source_block(
             "static int fs_scan_integrity(int verbose)",
             "static int fs_commit(void)",
         )
         boot = source_block(
             "static int boot_screen(EFI_HANDLE imageHandle)",
-            "static void boot_manager_help(void)",
+            "static void pre_os_help(void)",
         )
-        manager = source_block(
-            "static void boot_manager_shell(void)", "static void command_help(void)"
+        pre_os = source_block(
+            "static void pre_os_environment(void)", "static void command_help(void)"
         )
         self.assertIn("fs_check(0, verbose)", scan)
         self.assertIn("storage_probe_slots();", scan)
         self.assertIn("fs_scan_integrity(0);", boot)
         self.assertLess(
             boot.index("fs_scan_integrity(0);"),
-            boot.index('boot_stage(5, "interactive shell", 1);'),
+            boot.index('boot_stage(5, "TinyArmOS operating system"'),
         )
-        self.assertIn("fs_scan_integrity(1);", manager)
+        self.assertIn("fs_scan_integrity(1);", pre_os)
 
-    def test_boot_manager_routing_and_scrollback_lifecycle(self) -> None:
+    def test_r_routes_to_pre_os_before_the_normal_shell(self) -> None:
         boot = source_block(
             "static int boot_screen(EFI_HANDLE imageHandle)",
-            "static void boot_manager_help(void)",
+            "static void pre_os_help(void)",
         )
-        manager = source_block(
-            "static void boot_manager_shell(void)", "static void command_help(void)"
+        pre_os = source_block(
+            "static void pre_os_environment(void)", "static void command_help(void)"
         )
         entry = source_block("EFI_STATUS EFIAPI EfiMain", "for (;;) {")
-        self.assertIn("Press R for TinyArmOS Boot Manager (2 seconds)", boot)
-        self.assertIn("return errors != 0;", boot)
-        self.assertIn("=== TinyArmOS Boot Manager ===", manager)
-        self.assertIn("if (!gScrollbackEnabled) scrollback_enable();", manager)
-        self.assertLess(
-            entry.index("settings_apply_runtime();"),
-            entry.index("boot_manager_shell();"),
-        )
+        self.assertIn("Press R for the TinyArmOS Pre-OS Environment (2 seconds)", boot)
+        self.assertIn("return osMissing || !mounted || errors != 0;", boot)
+        self.assertIn("=== TinyArmOS Pre-OS Environment ===", pre_os)
+        self.assertIn("TinyArmOS has not started", pre_os)
+        self.assertIn("if (!gScrollbackEnabled) scrollback_enable();", pre_os)
+        self.assertLess(entry.index("pre_os_environment();"), entry.index("settings_load();"))
 
-    def test_boot_manager_uses_all_scrollback_navigation_keys(self) -> None:
+    def test_missing_os_routes_to_pre_os_and_can_be_repaired(self) -> None:
+        boot = source_block(
+            "static int boot_screen(EFI_HANDLE imageHandle)",
+            "static void pre_os_help(void)",
+        )
+        repair = source_block(
+            "static int pre_os_repair(void)",
+            "static int boot_screen(EFI_HANDLE imageHandle)",
+        )
+        self.assertIn("osMissing = storage_os_missing();", boot)
+        self.assertIn("storage_path_exists(gFactoryInstallPath)", boot)
+        self.assertIn("else if (!mounted && !snapshotFiles)", boot)
+        self.assertIn("OS MISSING - PRE-OS", boot)
+        self.assertNotIn("fs_check(1, 0)", boot)
+        self.assertIn("fs_check(1, 1);", repair)
+        self.assertIn("fs_commit()", repair)
+        self.assertIn("storage_clear_os_missing()", repair)
+
+    def test_pre_os_environment_uses_all_scrollback_navigation_keys(self) -> None:
         reader = source_block(
             "static void read_line(char *line, UINTN capacity)",
             "static const char *settings_color_name",
@@ -156,9 +171,9 @@ class ShellSourceTests(unittest.TestCase):
                 self.assertIn(f"key.ScanCode == {scan_code}", reader)
         self.assertIn("#define SCROLLBACK_LINES 256", SOURCE)
 
-    def test_boot_manager_commands_are_simplified(self) -> None:
+    def test_pre_os_recovery_commands_are_restricted(self) -> None:
         dispatch = source_block(
-            "static void boot_manager_shell(void)", "static void command_help(void)"
+            "static void pre_os_environment(void)", "static void command_help(void)"
         )
         for removed in ("restore", "unlock", "lock", "protect"):
             with self.subTest(command=removed):
@@ -166,7 +181,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertNotIn('starts_with(line, "protect ")', dispatch)
         self.assertNotIn("command_protect(line);", dispatch)
 
-    def test_legacy_manager_trees_are_migrated_before_bootmgr_metadata(self) -> None:
+    def test_legacy_recovery_and_bootmgr_apps_are_removed_from_minifs(self) -> None:
         restore = source_block(
             "static int fs_restore_system(void)", "static void fs_format(void)"
         )
@@ -176,33 +191,33 @@ class ShellSourceTests(unittest.TestCase):
         )
         self.assertIn('fs_find_child(FS_ROOT, "recovery")', migration)
         self.assertIn('fs_find_child((UINTN)apps, "recovery")', migration)
+        self.assertIn('fs_find_child((UINTN)apps, "bootmgr")', migration)
         self.assertIn("fs_remove_recursive", migration)
         self.assertIn("gCwd = FS_ROOT", migration)
         self.assertIn("gPreviousCwd = FS_ROOT", migration)
-        self.assertLess(
-            SOURCE.index("fs_remove_legacy_manager_trees();"),
-            SOURCE.index('fs_ensure_dir((UINTN)apps, "bootmgr"'),
-        )
         self.assertNotIn('fs_ensure_dir(FS_ROOT, "recovery"', restore)
         self.assertNotIn('fs_ensure_dir((UINTN)apps, "recovery"', restore)
-        self.assertIn('fs_ensure_dir((UINTN)apps, "bootmgr"', restore)
-        self.assertIn("boot-manager.info", restore)
+        self.assertNotIn('fs_ensure_dir((UINTN)apps, "bootmgr"', restore)
+        self.assertIn('fs_find_child((UINTN)boot, "boot-manager.info")', restore)
+        self.assertIn("pre-os.info", restore)
         boot = source_block(
             "static int boot_screen(EFI_HANDLE imageHandle)",
-            "static void boot_manager_help(void)",
+            "static void pre_os_help(void)",
         )
-        migration_commit = boot.split("else if (fs_restore_system())", 1)[1]
+        migration_commit = boot.split("fs_restore_system())", 1)[1]
         self.assertIn("fs_commit();", migration_commit)
 
-    def test_removed_agent_branding_and_shell_command_are_absent(self) -> None:
-        for removed in ("Recovery Agent", "recovery_agent", "recovery_help"):
+    def test_recovery_is_pre_os_only_not_an_in_os_command(self) -> None:
+        for removed in ("Recovery Agent", "recovery_agent", "recovery_help", "Boot Manager"):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, SOURCE)
         dispatch = source_block(
             "static void run_command(char *line)", "__attribute__((used))"
         )
-        self.assertIn('streq(command, "bootmgr")', dispatch)
+        self.assertNotIn('streq(command, "bootmgr")', dispatch)
         self.assertNotIn('streq(command, "recovery")', dispatch)
+        shell_help = source_block("static void command_help(void)", "static void command_info(void)")
+        self.assertNotIn("bootmgr", shell_help)
 
     def test_redundant_shell_aliases_are_not_dispatched(self) -> None:
         dispatch = source_block(
@@ -223,6 +238,7 @@ class ShellSourceTests(unittest.TestCase):
             "run doom",
             "poweroff",
             "recovery",
+            "bootmgr",
         ]
         for alias in aliases:
             with self.subTest(alias=alias):
@@ -230,7 +246,7 @@ class ShellSourceTests(unittest.TestCase):
                 self.assertIsNone(re.search(pattern, dispatch))
         self.assertNotIn('starts_with(command, "run ")', dispatch)
 
-    def test_exact_root_recursive_remove_destroys_the_os(self) -> None:
+    def test_exact_root_recursive_remove_destroys_os_but_leaves_pre_os(self) -> None:
         remove_dispatch = source_block(
             '} else if (starts_with(command, "rm ")',
             '} else if (starts_with(command, "cp ")',
@@ -246,6 +262,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("storage_wipe_os(&removed, &failures);", root_branch)
         self.assertIn("gStorageReady = 0;", root_branch)
         self.assertIn("ResetSystem(EfiResetShutdown", root_branch)
+        self.assertIn("The pre-OS environment remains", root_branch)
         self.assertNotIn("gProtectionUnlocked", root_branch)
         self.assertNotIn("read_line(", root_branch)
         self.assertNotIn("fs_commit()", root_branch)
@@ -260,6 +277,8 @@ class ShellSourceTests(unittest.TestCase):
         )
         self.assertIn("storage_collect_entries(directory", wipe)
         self.assertIn("storage_wipe_directory(child", wipe)
+        self.assertIn('char16_equals_ascii(entries[index].name, "BOOTAA64.EFI")', wipe)
+        self.assertIn("if (keepManager)", wipe)
         self.assertIn("storage_clear_read_only(child)", wipe)
         self.assertIn("child->Delete(child)", wipe)
         self.assertLess(
@@ -279,11 +298,15 @@ class ShellSourceTests(unittest.TestCase):
             "gDoomConfigPath",
             "gBootBackupPath",
             "gBootStagePath",
-            "gLoadedImagePath",
+            "gFactoryInstallPath",
+            "gOsMissingPath",
+            "gBootPath",
         ):
             with self.subTest(path=owned_path):
                 self.assertIn(owned_path, wipe)
         self.assertIn("storage_delete_owned_startup", wipe)
+        self.assertIn("storage_set_os_missing", wipe)
+        self.assertNotIn("storage_delete_path(gLoadedImagePath", wipe)
         self.assertNotIn("storage_wipe_directory(gVolumeRoot", wipe)
 
     def test_file_views_use_semantic_accent_colors(self) -> None:
