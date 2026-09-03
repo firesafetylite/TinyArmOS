@@ -40,7 +40,7 @@ Verified startup checks:
 
 The same integrity scan available in the Recovery Agent now runs automatically before the normal shell can boot. A detected file, directory, or checksum problem triggers repair and opens Recovery instead of silently continuing.
 
-Press **R** during the two-second boot prompt, or run `recovery`. The Recovery Agent supports scanning, repair, rollback, formatting, and read-only filesystem navigation. The redundant `restore` action is folded into `repair`; protection controls remain only in the normal shell, where filesystem writes are available.
+Press **R** during the two-second boot prompt, or run `recovery`. The Recovery Agent supports scanning, repair, rollback, formatting, and read-only filesystem navigation.
 
 ```text
 scan                           verify MiniFS2 and both snapshots
