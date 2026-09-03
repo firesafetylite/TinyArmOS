@@ -57,7 +57,7 @@ Verified firmware startup checks:
 4. Filesystem structure and every active file checksum
 5. Whether the TinyArmOS operating system is bootable
 
-This environment runs before the normal TinyArmOS shell. Press **Enter** during the two-second startup prompt to interrupt boot and open its partition menu. Use Up/Down and Enter to choose, **S** to save the selected default, or **R** to enter recovery immediately. GPT numbers are canonical: partition **1** is protected Pre-OS Recovery, partition **2** is the original TinyArmOS system, and newly added partitions are **3+**. In recovery, `order N` saves any registered partition number as the persistent default. It also opens automatically when TinyArmOS is missing, its system snapshot cannot be mounted, or integrity verification fails. Startup never silently repairs a damaged installation.
+This environment runs before the normal TinyArmOS shell. Press **Enter** during the two-second startup prompt to interrupt boot and open its partition menu. The selector redraws in place as you use Up/Down; press Enter to choose, **S** to save the selected default, or **R** to enter recovery immediately. GPT numbers are canonical: partition **1** is protected Pre-OS Recovery, partition **2** is the original TinyArmOS system, and newly added partitions are **3+**. In recovery, `order N` saves any registered partition number as the persistent default. It also opens automatically when TinyArmOS is missing, its system snapshot cannot be mounted, or integrity verification fails. Startup never silently repairs a damaged installation.
 
 The former recovery methods and management commands now exist only in this pre-OS environment; there is no `bootmgr` command inside TinyArmOS. The environment remains available after an OS wipe and always provides 256 lines of scrollback with Up/Down line scrolling, PageUp/PageDown paging, Home for the oldest output, and End or Esc to return live.
 
@@ -79,7 +79,9 @@ boot [N]                       verify and start the selected partition
 reboot/shutdown                restart or power off
 ```
 
-Partition names are 1–11 characters using letters, digits, `_`, or `-`; names are normalized to uppercase and must be unique. Partition creation and naming update both GPT copies and FAT metadata, and require a reboot before firmware volume discovery is refreshed. The recovery partition rejects every user-targeted mutation.
+Partition names are 1–11 characters using letters, digits, `_`, or `-`; names are normalized to uppercase and must be unique. Partition creation and naming update both GPT copies and FAT metadata, and require a reboot before firmware volume discovery is refreshed. Until that reboot, the new volume is shown as requiring activation; this does not mean partition creation failed. The recovery partition rejects every user-targeted mutation.
+
+From the regular TinyArmOS shell, `partitions` provides the same numbered list in read-only form and tells you to reboot and press **R** for management. Creation, naming, repair, reset, rollback, boot-order changes, and recovery-partition access remain pre-OS-only.
 
 MiniFS2 alternates between two checksummed snapshots independently on each system/data partition. If partition 2 is unusable, for example, use `rollback 2`, `repair 2`, or `reset 2`, then `boot 2`.
 
@@ -234,6 +236,7 @@ echo TEXT
 info
 uptime
 count
+partitions
 settings
 protect [status|unlock|lock]
 update [check] [main|nightly]
@@ -254,7 +257,9 @@ update nightly            install from the rolling nightly beta
 
 The updater compares an internal compatibility version and the EFI digest, so a changed nightly build is detected even though the OS displays only `nightly`. It refuses channel changes that would downgrade the installed compatibility version.
 
-The in-OS updater requires VM firmware that exposes UEFI HTTP/TLS. That firmware is platform hardware and is not contained in the maintained disk image; stock VM firmware may therefore report that the service is unavailable. When available, the updater uses IPv4 DHCP and automatically continues through the UTM Shared Network fallback, validates the redirect-free GitHub Pages manifest and SHA-256 checksum, confirms the download is an ARM64 EFI application, rejects rollback versions, and keeps `EFI/BOOT/BOOTAA64.BAK` as a recovery copy. Reboot after installation.
+The in-OS updater requires VM firmware that exposes UEFI HTTP/TLS. That firmware is platform hardware and is not contained in the maintained disk image; stock VM firmware may therefore report that the service is unavailable. In UTM, keep `TinyArmOS-QEMU_EFI.fd` attached as a read-only PFlash drive and `TinyArmOS-QEMU_EFI-vars.fd` as its writable PFlash variables drive, with Emulated networking and VirtIO RNG enabled. These files live beside the virtual disk in the VM bundle, so replacing or updating `TinyArmOS.img` does not replace the HTTP/TLS firmware. Do not switch the VM back to UTM's built-in UEFI when updating the OS.
+
+When available, the updater uses IPv4 DHCP and automatically continues through the UTM Shared Network fallback, validates the redirect-free GitHub Pages manifest and SHA-256 checksum, confirms the download is an ARM64 EFI application, rejects rollback versions, and keeps `EFI/BOOT/BOOTAA64.BAK` as a recovery copy. Reboot after installation.
 
 For the supported image-only fallback, shut down the VM, download the `tinyarmos` host command from the release, and run:
 

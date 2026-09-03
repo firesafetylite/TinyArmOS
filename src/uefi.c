@@ -2384,14 +2384,27 @@ static UINTN pre_os_next_partition(UINTN selected, int direction) {
     return 1U;
 }
 
+static void pre_os_draw_boot_menu(UINTN selected, const char *status) {
+    gST->ConOut->ClearScreen(gST->ConOut);
+    settings_use_accent_color();
+    print("=== Partition Boot Manager ===\n");
+    settings_use_default_color();
+    print("Choose a partition to boot. Recovery is protected and always partition 1.\n\n");
+    pre_os_print_partitions(selected);
+    print("\nUp/Down select, Enter boot, S save default, R recovery");
+    if (status && *status) {
+        print("\n");
+        print(status);
+    }
+    print("\n");
+}
+
 static UINTN pre_os_boot_menu(void) {
     EFI_INPUT_KEY key;
     UINTN selected = boot_order_default_partition();
     if (!pre_os_partition_registered(selected)) selected = 2U;
     if (!pre_os_partition_registered(selected)) selected = 1U;
-    print("\n  === Partition Boot Manager ===\n");
-    pre_os_print_partitions(selected);
-    print("  Up/Down select, Enter boot, S save default, R recovery\n");
+    pre_os_draw_boot_menu(selected, (const char *)0);
     for (;;) {
         if (!poll_input_key(&key)) {
             __asm__ volatile("yield");
@@ -2399,20 +2412,21 @@ static UINTN pre_os_boot_menu(void) {
         }
         if (key.ScanCode == 1) {
             selected = pre_os_next_partition(selected, -1);
-            print("  Selected partition "); print_u64(selected); print(": ");
-            print(gPartitionNames[selected - 1U]); print("\n");
+            pre_os_draw_boot_menu(selected, (const char *)0);
         } else if (key.ScanCode == 2) {
             selected = pre_os_next_partition(selected, 1);
-            print("  Selected partition "); print_u64(selected); print(": ");
-            print(gPartitionNames[selected - 1U]); print("\n");
+            pre_os_draw_boot_menu(selected, (const char *)0);
         } else if (key.UnicodeChar >= '1' && key.UnicodeChar <= '9' &&
                    pre_os_partition_registered((UINTN)(key.UnicodeChar - '0'))) {
             return (UINTN)(key.UnicodeChar - '0');
         } else if (key.UnicodeChar == 'r' || key.UnicodeChar == 'R') return 1U;
         else if (key.UnicodeChar == '\r' || key.UnicodeChar == '\n') return selected;
         else if (key.UnicodeChar == 's' || key.UnicodeChar == 'S')
-            print(boot_order_save(selected) ? "  Default boot partition saved.\n" :
-                  "  Could not save the default boot partition.\n");
+            pre_os_draw_boot_menu(
+                selected,
+                boot_order_save(selected) ? "Default boot partition saved." :
+                                               "Could not save the default boot partition."
+            );
     }
 }
 
@@ -2729,6 +2743,7 @@ static void command_help(void) {
         "  uptime               show seconds since boot\n"
         "  count                show commands entered this boot\n"
         "Navigation and discovery:\n"
+        "  partitions           view disk partitions (manage them in pre-OS)\n"
         "  pwd                  print the current directory\n"
         "  ls [PATH]            list a directory or file\n"
         "  tree [PATH]          show a directory tree\n"
@@ -2821,6 +2836,10 @@ static void run_command(char *line) {
     } else if (streq(command, "count")) {
         print_u64(gCommands);
         print(" commands entered this boot\n");
+    } else if (streq(command, "partitions")) {
+        print("Disk partitions (read-only from TinyArmOS):\n");
+        pre_os_print_partitions(gActivePartition);
+        print("Reboot and press R to enter the pre-OS recovery environment to manage partitions.\n");
     } else if (streq(command, "pwd")) {
         char path[FS_PATH_BYTES];
         fs_path(gCwd, path, sizeof(path));

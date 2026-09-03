@@ -43,6 +43,7 @@ class ShellSourceTests(unittest.TestCase):
             "info",
             "uptime",
             "count",
+            "partitions",
             "pwd",
             "ls [PATH]",
             "tree [PATH]",
@@ -143,10 +144,13 @@ class ShellSourceTests(unittest.TestCase):
             "static void pre_os_environment(void)", "static void command_help(void)"
         )
         entry = source_block("EFI_STATUS EFIAPI EfiMain", "for (;;) {")
-        menu = source_block("static UINTN pre_os_boot_menu(void)", "static int boot_screen")
+        menu = source_block("static void pre_os_draw_boot_menu", "static int boot_screen")
         self.assertIn("Up/Down select, Enter boot, S save default, R recovery", menu)
         self.assertIn("Press Enter to interrupt boot and open the partition menu", menu)
         self.assertIn("boot_order_save(selected)", menu)
+        self.assertIn("ClearScreen", menu)
+        self.assertIn("pre_os_draw_boot_menu(selected", menu)
+        self.assertNotIn("Selected partition ", menu)
         self.assertIn("targetPartition = pre_os_boot_prompt();", boot)
         self.assertIn("if (targetPartition == 1U) return 1;", boot)
         self.assertIn("=== TinyArmOS Pre-OS Environment ===", pre_os)
@@ -232,6 +236,19 @@ class ShellSourceTests(unittest.TestCase):
         self.assertNotIn('streq(command, "recovery")', dispatch)
         shell_help = source_block("static void command_help(void)", "static void command_info(void)")
         self.assertNotIn("bootmgr", shell_help)
+
+    def test_shell_partitions_is_read_only_and_points_to_pre_os(self) -> None:
+        dispatch = source_block(
+            "static void run_command(char *line)", "__attribute__((used))"
+        )
+        command = dispatch.split('streq(command, "partitions")', 1)[1].split(
+            '} else if (streq(command, "pwd"))', 1
+        )[0]
+        self.assertIn("pre_os_print_partitions(gActivePartition)", command)
+        self.assertIn("read-only from TinyArmOS", command)
+        self.assertIn("press R", command)
+        self.assertNotIn("partition_add", command)
+        self.assertNotIn("partition_rename", command)
 
     def test_redundant_shell_aliases_are_not_dispatched(self) -> None:
         dispatch = source_block(
