@@ -295,7 +295,7 @@ static void editor_picker_draw(
     settings_use_default_color();
     editor_write_row(rows - 2U, notice ? notice : "Enter opens the selected item.", columns);
     settings_use_accent_color();
-    editor_write_row(rows - 1U, "Up/Down Select | Enter Open | N New | Backspace Parent | Esc Cancel", columns);
+    editor_write_row(rows - 1U, "Up/Down Select | Enter Open | N New | Left/Backspace/B Parent | Esc Exit", columns);
     settings_use_default_color();
 }
 
@@ -323,7 +323,7 @@ static void editor_new_file_draw(
     editor_write_row(4, input, columns);
     editor_write_row(rows - 2U, notice ? notice : "Allowed: letters, digits, dot, underscore, dash, plus.", columns);
     settings_use_accent_color();
-    editor_write_row(rows - 1U, "Enter Create | Backspace Delete | Esc Back to File Picker", columns);
+    editor_write_row(rows - 1U, "Enter Create | Backspace Delete | Left/Esc Back to File Picker", columns);
     settings_use_default_color();
     cursorColumn = string_length(input);
     if (cursorColumn >= columns) cursorColumn = columns - 1U;
@@ -343,8 +343,10 @@ static int editor_new_file_modal(UINTN directory, char *path, UINTN capacity) {
         editor_new_file_draw(directory, name, notice);
         notice = (const char *)0;
         editor_wait_key(&key);
-        if (key.ScanCode == EDITOR_SCAN_ESCAPE || key.UnicodeChar == 27U) return 0;
-        if (key.UnicodeChar == 8U || key.UnicodeChar == 127U) {
+        if (key.ScanCode == EDITOR_SCAN_ESCAPE || key.ScanCode == EDITOR_SCAN_LEFT ||
+            key.UnicodeChar == 27U) return 0;
+        if (key.ScanCode == EDITOR_SCAN_DELETE || key.UnicodeChar == 8U ||
+            key.UnicodeChar == 127U) {
             if (used) name[--used] = 0;
         } else if (key.UnicodeChar == '\r' || key.UnicodeChar == '\n') {
             UINTN needed;
@@ -409,7 +411,10 @@ static int editor_file_picker(char *path, UINTN capacity) {
             selected = selected > page ? selected - page : 0U;
         } else if (key.ScanCode == EDITOR_SCAN_PAGE_DOWN) {
             selected = selected + page < itemCount ? selected + page : itemCount - 1U;
-        } else if (key.UnicodeChar == 8U || key.UnicodeChar == 127U) {
+        } else if (key.ScanCode == EDITOR_SCAN_LEFT ||
+                   key.ScanCode == EDITOR_SCAN_DELETE || key.UnicodeChar == 8U ||
+                   key.UnicodeChar == 127U || key.UnicodeChar == 'b' ||
+                   key.UnicodeChar == 'B') {
             if (directory != FS_ROOT) {
                 directory = gNodes[directory].parent;
                 selected = 0;

@@ -425,7 +425,10 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("static int editor_new_file_modal", EDITOR_SOURCE)
         self.assertIn("editor_file_picker(requestedPath", EDITOR_SOURCE)
         self.assertIn("[ New text file ]", EDITOR_SOURCE)
-        self.assertIn("Backspace Parent", EDITOR_SOURCE)
+        self.assertIn("Left/Backspace/B Parent", EDITOR_SOURCE)
+        self.assertIn("Left/Esc Back to File Picker", EDITOR_SOURCE)
+        self.assertIn("key.ScanCode == EDITOR_SCAN_LEFT", EDITOR_SOURCE)
+        self.assertIn("key.UnicodeChar == 'B'", EDITOR_SOURCE)
         self.assertNotIn("read_line(", EDITOR_SOURCE)
         editor_draw = EDITOR_SOURCE.split("static void editor_draw", 1)[1].split(
             "static int editor_save", 1
