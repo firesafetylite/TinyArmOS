@@ -217,7 +217,7 @@ static void editor_draw(
         *topRow = cursorRow - contentRows + 1U;
 
     settings_use_accent_color();
-    editor_write_row(0, "=== TinyArmOS Text Editor ===", columns);
+    editor_write_row(0, "=== TinyGPT Text Editor ===", columns);
     settings_use_default_color();
     pathLine[0] = 0;
     string_append(pathLine, path, sizeof(pathLine));
@@ -292,7 +292,7 @@ static void editor_picker_draw(
     fs_path(directory, location, sizeof(location));
     gST->ConOut->EnableCursor(gST->ConOut, 0);
     settings_use_accent_color();
-    editor_write_row(0, "=== TinyArmOS Text Editor: Open File ===", columns);
+    editor_write_row(0, "=== TinyGPT Text Editor: Open File ===", columns);
     settings_use_default_color();
     rowText[0] = 0;
     string_append(rowText, "Location: ", sizeof(rowText));
@@ -336,7 +336,7 @@ static void editor_new_file_draw(
     editor_dimensions(&columns, &rows);
     fs_path(directory, location, sizeof(location));
     settings_use_accent_color();
-    editor_write_row(0, "=== TinyArmOS Text Editor: New File ===", columns);
+    editor_write_row(0, "=== TinyGPT Text Editor: New File ===", columns);
     settings_use_default_color();
     editor_write_row(1, "Enter a MiniFS2 file name. The file is created when first saved.", columns);
     input[0] = 0;

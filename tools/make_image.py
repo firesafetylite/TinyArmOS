@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create the two-partition TinyArmOS ARM64 UEFI disk image."""
+"""Create the two-partition TinyGPT ARM64 UEFI disk image."""
 
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ def format_recovery_fat16(
     volume_base = start * SECTOR
     boot = bytearray(SECTOR)
     boot[0:3] = b"\xeb\x3c\x90"
-    boot[3:11] = b"TINYARMS"
+    boot[3:11] = b"TINYGPT "
     struct.pack_into("<H", boot, 11, SECTOR)
     boot[13] = sectors_per_cluster
     struct.pack_into("<H", boot, 14, reserved)
@@ -148,7 +148,7 @@ def format_recovery_fat16(
     struct.pack_into("<I", boot, 28, start)
     boot[36] = 0x80
     boot[38] = 0x29
-    struct.pack_into("<I", boot, 39, 0x54415252)
+    struct.pack_into("<I", boot, 39, 0x54475052)
     boot[43:54] = b"TINYRECOV  "
     boot[54:62] = b"FAT16   "
     boot[510:512] = b"\x55\xaa"
@@ -245,7 +245,7 @@ def format_system_fat32(
     volume_base = start * SECTOR
     boot = bytearray(SECTOR)
     boot[0:3] = b"\xeb\x58\x90"
-    boot[3:11] = b"TINYARMS"
+    boot[3:11] = b"TINYGPT "
     struct.pack_into("<H", boot, 11, SECTOR)
     boot[13] = sectors_per_cluster
     struct.pack_into("<H", boot, 14, reserved)
@@ -261,8 +261,8 @@ def format_system_fat32(
     struct.pack_into("<H", boot, 50, 6)
     boot[64] = 0x80
     boot[66] = 0x29
-    struct.pack_into("<I", boot, 67, 0x5441524D)
-    boot[71:82] = b"TINYARMOS  "
+    struct.pack_into("<I", boot, 67, 0x54475054)
+    boot[71:82] = b"TINYGPT    "
     boot[82:90] = b"FAT32   "
     boot[510:512] = b"\x55\xaa"
     image[volume_base : volume_base + SECTOR] = boot
@@ -311,8 +311,8 @@ def format_system_fat32(
         2,
         directory(
             [
-                short_entry(b"TINYARMOS  ", 0x08, 0),
-                short_entry(b"TINYOS  NEW", 0x20, factory_first, len(factory_install)),
+                short_entry(b"TINYGPT    ", 0x08, 0),
+                short_entry(b"TINYGPT NEW", 0x20, factory_first, len(factory_install)),
                 short_entry(b"DOOMU   WAD", 0x20, freedoom_first, len(freedoom)),
             ]
         ),
@@ -331,7 +331,7 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
     efi = efi_path.read_bytes()
     freedoom = freedoom_path.read_bytes()
     startup = b"fs0:\\EFI\\BOOT\\BOOTAA64.EFI\r\n"
-    factory_install = b"Initialize TinyArmOS on first boot\n"
+    factory_install = b"Initialize TinyGPT on first boot\n"
     total_sectors = IMAGE_BYTES // SECTOR
     backup_header_lba = total_sectors - 1
     backup_entries_lba = backup_header_lba - GPT_ENTRY_SECTORS
@@ -357,14 +357,14 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
         RECOVERY_GUID,
         RECOVERY_START,
         recovery_last,
-        "TinyArmOS Recovery",
+        "TinyGPT Recovery",
     )
     entries[GPT_ENTRY_BYTES : 2 * GPT_ENTRY_BYTES] = gpt_entry(
         ESP_TYPE,
         SYSTEM_GUID,
         SYSTEM_START,
         SYSTEM_LAST,
-        "TinyArmOS System",
+        "TinyGPT System",
     )
     entries_crc = zlib.crc32(entries) & 0xFFFFFFFF
     image[2 * SECTOR : (2 + GPT_ENTRY_SECTORS) * SECTOR] = entries
@@ -383,7 +383,7 @@ def build_image(efi_path: Path, output_path: Path, freedoom_path: Path) -> None:
     output_path.write_bytes(image)
     print(f"Created {output_path} ({IMAGE_BYTES // (1024 * 1024)} MiB, 2 partitions)")
     print(f"Embedded {efi_path} ({len(efi)} bytes) in the recovery ESP")
-    print(f"Embedded {freedoom_path} ({len(freedoom)} bytes) in the TinyArmOS system partition")
+    print(f"Embedded {freedoom_path} ({len(freedoom)} bytes) in the TinyGPT system partition")
 
 
 def main() -> None:

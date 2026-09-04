@@ -4,8 +4,8 @@ cd "$(dirname "$0")"
 mkdir -p build
 # Remove outputs from the retired UTM bundle build so they cannot be mistaken
 # for maintained artifacts after upgrading an existing checkout.
-rm -rf build/TinyArmOS.utm
-rm -f build/TinyArmOS-UTM.img
+rm -rf build/TinyGPT.utm
+rm -f build/TinyGPT-UTM.img
 
 if command -v zig >/dev/null 2>&1; then
   ZIG=(zig)
@@ -18,17 +18,17 @@ else
   exit 1
 fi
 
-BUILD_DEFINES=('-DTINYARMOS_BUILD_CHANNEL="main"')
-case "${TINYARMOS_BUILD_CHANNEL:-main}" in
+BUILD_DEFINES=('-DTINYGPT_BUILD_CHANNEL="main"')
+case "${TINYGPT_BUILD_CHANNEL:-main}" in
   main) ;;
   nightly)
     BUILD_DEFINES=(
-      '-DTINYARMOS_DISPLAY_VERSION="nightly"'
-      '-DTINYARMOS_BUILD_CHANNEL="nightly"'
+      '-DTINYGPT_DISPLAY_VERSION="nightly"'
+      '-DTINYGPT_BUILD_CHANNEL="nightly"'
     )
     ;;
   *)
-    echo "TINYARMOS_BUILD_CHANNEL must be 'main' or 'nightly'." >&2
+    echo "TINYGPT_BUILD_CHANNEL must be 'main' or 'nightly'." >&2
     exit 1
     ;;
 esac
@@ -41,8 +41,8 @@ esac
   -Wl,--subsystem=efi_application \
   -o build/BOOTAA64.EFI src/uefi.c
 
-python3 tools/make_image.py build/BOOTAA64.EFI build/TinyArmOS.img assets/freedoom1.wad
+python3 tools/make_image.py build/BOOTAA64.EFI build/TinyGPT.img assets/freedoom1.wad
 
 echo
 echo "Build complete:"
-ls -lh build/BOOTAA64.EFI build/TinyArmOS.img
+ls -lh build/BOOTAA64.EFI build/TinyGPT.img

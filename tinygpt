@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""TinyArmOS host command.
+"""TinyGPT host command.
 
-``tinyarmos update`` uses the host's HTTPS support to fetch the selected main
+``tinygpt update`` uses the host's HTTPS support to fetch the selected main
 or nightly GitHub release and replaces only EFI/BOOT/BOOTAA64.EFI in a
-TinyArmOS disk image, preserving MiniFS snapshots and other files. Legacy UTM
+TinyGPT disk image, preserving MiniFS snapshots and other files. Legacy UTM
 bundles remain explicit targets.
 """
 
@@ -26,10 +26,10 @@ import uuid
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-REPOSITORY = "firesafetylite/TinyArmOS"
+REPOSITORY = "firesafetylite/TinyGPT"
 MAIN_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 NIGHTLY_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/tags/nightly"
-USER_AGENT = "TinyArmOS-Host-Updater/0.1.5"
+USER_AGENT = "TinyGPT-Host-Updater/0.1.6"
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_EFI_BYTES = 16 * 1024 * 1024
 ESP_TYPE = uuid.UUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
@@ -37,19 +37,19 @@ VERSION_RE = re.compile(
     r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?"
 )
 VERSION_MARKER_RE = re.compile(
-    rb"TinyArmOS ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    rb"TinyGPT ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     rb"(?:\.(?:0|[1-9][0-9]*))?)\narchitecture=ARM64\nfirmware=UEFI"
 )
 BUILD_VERSION_MARKER_RE = re.compile(
-    rb"TinyArmOSBuildVersion=((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    rb"TinyGPTBuildVersion=((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     rb"(?:\.(?:0|[1-9][0-9]*))?)\n"
 )
-BUILD_CHANNEL_MARKER_RE = re.compile(rb"TinyArmOSBuildChannel=(main|nightly)\n")
-NIGHTLY_EFI_NAME = "TinyArmOS-nightly-BOOTAA64.EFI"
-NIGHTLY_MANIFEST_NAME = "TinyArmOS-nightly-update.txt"
+BUILD_CHANNEL_MARKER_RE = re.compile(rb"TinyGPTBuildChannel=(main|nightly)\n")
+NIGHTLY_EFI_NAME = "TinyGPT-nightly-BOOTAA64.EFI"
+NIGHTLY_MANIFEST_NAME = "TinyGPT-nightly-update.txt"
 NIGHTLY_IMAGE_URL = (
-    "https://firesafetylite.github.io/TinyArmOS/nightly/"
-    "TinyArmOS-latest-BOOTAA64.EFI"
+    "https://firesafetylite.github.io/TinyGPT/nightly/"
+    "TinyGPT-latest-BOOTAA64.EFI"
 )
 BOOT_PATH = (b"EFI        ", b"BOOT       ", b"BOOTAA64EFI")
 
@@ -71,7 +71,7 @@ def github_host(hostname: Optional[str]) -> bool:
 def version_tuple(text: str) -> Tuple[int, int, int]:
     match = VERSION_RE.fullmatch(text)
     if not match:
-        raise UpdateError(f"invalid TinyArmOS version: {text!r}")
+        raise UpdateError(f"invalid TinyGPT version: {text!r}")
     major, minor, patch = match.groups()
     return int(major), int(minor), int(patch or 0)
 
@@ -85,7 +85,7 @@ def embedded_version(image: bytes) -> str:
         for match in BUILD_VERSION_MARKER_RE.finditer(image)
     )
     if len(matches) != 1:
-        raise UpdateError("could not identify exactly one TinyArmOS version in the EFI image")
+        raise UpdateError("could not identify exactly one TinyGPT version in the EFI image")
     return matches.pop()
 
 
@@ -97,7 +97,7 @@ def embedded_channel(image: bytes) -> str:
     if not matches:
         return "main"
     if len(matches) != 1:
-        raise UpdateError("could not identify exactly one TinyArmOS channel in the EFI image")
+        raise UpdateError("could not identify exactly one TinyGPT channel in the EFI image")
     return matches.pop()
 
 
@@ -212,7 +212,7 @@ def release_assets(channel: str) -> Tuple[str, Dict[str, dict], str]:
             raise UpdateError("the main GitHub Release has no valid version tag")
         version = tag[1:]
         version_tuple(version)
-        expected_efi = f"TinyArmOS-{tag}-BOOTAA64.EFI"
+        expected_efi = f"TinyGPT-{tag}-BOOTAA64.EFI"
     else:
         if tag != "nightly" or release.get("prerelease") is not True:
             raise UpdateError("the nightly GitHub Release is not a valid prerelease")
@@ -257,7 +257,7 @@ def checksum_for(text: bytes, filename: str) -> str:
 
 
 class Fat32Image:
-    """Minimal FAT16/FAT32 reader/editor for a TinyArmOS GPT partition."""
+    """Minimal FAT16/FAT32 reader/editor for a TinyGPT GPT partition."""
 
     def __init__(self, data: bytes, partition_index: int = 0) -> None:
         self.data = bytearray(data)
@@ -268,7 +268,7 @@ class Fat32Image:
         elif self.data[self.volume_offset + 54 : self.volume_offset + 62] == b"FAT16   ":
             self.fat_bits = 16
         else:
-            raise UpdateError("TinyArmOS partition is not FAT16 or FAT32")
+            raise UpdateError("TinyGPT partition is not FAT16 or FAT32")
         self.bytes_per_sector = self._u16(self.volume_offset + 11)
         self.sectors_per_cluster = self.data[self.volume_offset + 13]
         self.reserved_sectors = self._u16(self.volume_offset + 14)
@@ -457,7 +457,7 @@ class Fat32Image:
                 if self._fat_get(cluster) == 0
             ][:required]
             if len(free) != required:
-                raise UpdateError("not enough free space in the TinyArmOS disk image")
+                raise UpdateError("not enough free space in the TinyGPT disk image")
             chain.extend(free)
         for index, cluster in enumerate(chain):
             eof = 0xFFFF if self.fat_bits == 16 else 0x0FFFFFFF
@@ -488,7 +488,7 @@ def target_disk(path: Path) -> Tuple[str, Path]:
     if path.is_file() and path.suffix.lower() == ".efi":
         return "efi", path
     raise UpdateError(
-        "target must be a TinyArmOS .img disk, legacy .utm bundle, or .EFI file"
+        "target must be a TinyGPT .img disk, legacy .utm bundle, or .EFI file"
     )
 
 
@@ -496,11 +496,11 @@ def discover_target() -> Path:
     candidates: List[Path] = []
     source_root = Path(__file__).resolve().parent
     search_roots = [Path.cwd(), source_root]
-    build_image = source_root / "build" / "TinyArmOS.img"
+    build_image = source_root / "build" / "TinyGPT.img"
     if build_image.is_file():
         candidates.append(build_image)
     for root in search_roots:
-        candidates.extend(sorted(root.glob("TinyArmOS*.img")))
+        candidates.extend(sorted(root.glob("TinyGPT*.img")))
     unique = []
     seen = set()
     for candidate in candidates:
@@ -511,7 +511,7 @@ def discover_target() -> Path:
     if len(unique) == 1:
         return unique[0]
     if not unique:
-        raise UpdateError("no TinyArmOS .img file found; pass its path after 'update'")
+        raise UpdateError("no TinyGPT .img file found; pass its path after 'update'")
     raise UpdateError("multiple .img files found; pass the one to update explicitly")
 
 
@@ -601,7 +601,7 @@ def update_command(args: argparse.Namespace) -> int:
     requested_target = Path(args.target) if args.target else discover_target()
     if requested_target.suffix.lower() == ".utm":
         print(
-            "tinyarmos: warning: .utm bundles are deprecated; new releases use .img files",
+            "tinygpt: warning: .utm bundles are deprecated; new releases use .img files",
             file=sys.stderr,
         )
     kind, target = target_disk(requested_target)
@@ -609,7 +609,7 @@ def update_command(args: argparse.Namespace) -> int:
     current_version = validate_efi(current_image)
     current_channel = embedded_channel(current_image)
     current_label = "nightly" if current_channel == "nightly" else current_version
-    print(f"Installed TinyArmOS: {current_label}")
+    print(f"Installed TinyGPT: {current_label}")
     print(f"Checking the {args.channel} GitHub update channel...")
     latest_version, assets, efi_name = release_assets(args.channel)
     latest_label = "nightly" if args.channel == "nightly" else latest_version
@@ -623,7 +623,7 @@ def update_command(args: argparse.Namespace) -> int:
         version_tuple(latest_version) < version_tuple(current_version)
     )
     if comparison == 0 and hashlib.sha256(current_image).hexdigest() == expected_digest:
-        print("TinyArmOS is already up to date on the selected channel.")
+        print("TinyGPT is already up to date on the selected channel.")
         return 0
     if comparison < 0:
         raise UpdateError("selected update channel is older; refusing to downgrade")
@@ -650,7 +650,7 @@ def update_command(args: argparse.Namespace) -> int:
         if not sys.stdin.isatty():
             raise UpdateError("confirmation required; rerun with --yes in a non-interactive shell")
         answer = input(
-            f"Update {requested_target} to TinyArmOS {latest_label} "
+            f"Update {requested_target} to TinyGPT {latest_label} "
             f"from {args.channel}? [y/N] "
         )
         if answer.strip().lower() not in ("y", "yes"):
@@ -662,7 +662,7 @@ def update_command(args: argparse.Namespace) -> int:
     if embedded_channel(installed) != args.channel:
         raise UpdateError("installed EFI channel failed read-back verification")
     installed_label = "nightly" if args.channel == "nightly" else latest_version
-    print(f"Updated TinyArmOS to {installed_label} from {args.channel}.")
+    print(f"Updated TinyGPT to {installed_label} from {args.channel}.")
     print(f"Backup: {backup}")
     print("Start the VM normally. Delete the .bak file after confirming it boots.")
     return 0
@@ -670,18 +670,18 @@ def update_command(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="tinyarmos",
-        description="Manage TinyArmOS disk images from the host.",
+        prog="tinygpt",
+        description="Manage TinyGPT disk images from the host.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     update = subparsers.add_parser(
-        "update", help="update a TinyArmOS disk image from GitHub Releases"
+        "update", help="update a TinyGPT disk image from GitHub Releases"
     )
     update.add_argument(
         "target",
         nargs="?",
         help=(
-            "TinyArmOS .img disk, legacy .utm bundle, or BOOTAA64.EFI "
+            "TinyGPT .img disk, legacy .utm bundle, or BOOTAA64.EFI "
             "(an .img is auto-detected when omitted)"
         ),
     )
@@ -705,10 +705,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         return args.handler(args)
     except UpdateError as error:
-        print(f"tinyarmos: {error}", file=sys.stderr)
+        print(f"tinygpt: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("\ntinyarmos: cancelled", file=sys.stderr)
+        print("\ntinygpt: cancelled", file=sys.stderr)
         return 130
 
 

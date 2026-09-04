@@ -45,7 +45,7 @@ typedef struct {
 static EFI_GUID gBlockIoProtocolGuid = {0x964e5b21, 0x6459, 0x11d2, {0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}};
 /* UTM's stock UEFI only publishes FAT volumes typed as ESP through SimpleFS. */
 static EFI_GUID gFatPartitionGuid = {0xc12a7328, 0xf81f, 0x11d2, {0xba,0x4b,0x00,0xa0,0xc9,0x3e,0xc9,0x3b}};
-static EFI_GUID gTinyArmDiskGuid = {0x117a71a5, 0xe844, 0x4e20, {0xa4,0x75,0x74,0x69,0x6e,0x79,0x6f,0x73}};
+static EFI_GUID gTinyGPTDiskGuid = {0x117a71a5, 0xe844, 0x4e20, {0xa4,0x75,0x74,0x69,0x6e,0x79,0x6f,0x73}};
 static EFI_GUID gRecoveryPartitionGuid = {0xe056959d, 0x53d4, 0x4c21, {0x9f,0xf4,0x72,0x65,0x63,0x6f,0x76,0x31}};
 static UINTN gPartitionError;
 
@@ -145,10 +145,10 @@ static int partition_disk_open(PARTITION_DISK *disk) {
             io->Media->LastBlock < 4095U) continue;
         if (partition_read_blocks(io, 1U, GPT_SECTOR_SIZE, disk->primary) != EFI_SUCCESS ||
             !partition_header_valid(disk->primary, 1U) ||
-            !partition_bytes_equal(disk->primary + 56U, (const UINT8 *)&gTinyArmDiskGuid, 16U)) continue;
+            !partition_bytes_equal(disk->primary + 56U, (const UINT8 *)&gTinyGPTDiskGuid, 16U)) continue;
         if (partition_read_blocks(io, io->Media->LastBlock, GPT_SECTOR_SIZE, disk->backup) != EFI_SUCCESS ||
             !partition_header_valid(disk->backup, io->Media->LastBlock) ||
-            !partition_bytes_equal(disk->backup + 56U, (const UINT8 *)&gTinyArmDiskGuid, 16U)) continue;
+            !partition_bytes_equal(disk->backup + 56U, (const UINT8 *)&gTinyGPTDiskGuid, 16U)) continue;
         disk->io = io;
         break;
     }
@@ -256,7 +256,7 @@ static int partition_format_fat16(EFI_BLOCK_IO_PROTOCOL *io, UINT64 start, UINT6
     if (clusters < 4085U) return 0;
     memory_zero(sector, sizeof(sector));
     sector[0] = 0xeb; sector[1] = 0x3c; sector[2] = 0x90;
-    memory_copy(sector + 3U, "TINYARMS", 8U);
+    memory_copy(sector + 3U, "TINYGPT ", 8U);
     partition_write_u16(sector + 11U, GPT_SECTOR_SIZE);
     sector[13] = (UINT8)sectorsPerCluster;
     partition_write_u16(sector + 14U, 1U);
@@ -273,7 +273,7 @@ static int partition_format_fat16(EFI_BLOCK_IO_PROTOCOL *io, UINT64 start, UINT6
     partition_write_u32(sector + 39U, serial);
     for (index = 0; index < 11U; index++) sector[43U + index] = label[index] ? (UINT8)label[index] : ' ';
     memory_copy(sector + 54U, "FAT16   ", 8U);
-    memory_copy(sector + 62U, "TinyArmOS data partition\r\n", 25U);
+    memory_copy(sector + 62U, "TinyGPT data partition\r\n", 24U);
     sector[510] = 0x55; sector[511] = 0xaa;
     if (partition_write_blocks(io, start, GPT_SECTOR_SIZE, sector) != EFI_SUCCESS) return 0;
     memory_zero(sector, sizeof(sector));
@@ -286,7 +286,7 @@ static int partition_format_fat16(EFI_BLOCK_IO_PROTOCOL *io, UINT64 start, UINT6
     memory_zero(sector, sizeof(sector));
     for (index = 0; index < 11U; index++) sector[index] = label[index] ? (UINT8)label[index] : ' ';
     sector[11] = 0x08;
-    memory_copy(sector + 32U, "TINYOS  NEW", 11U);
+    memory_copy(sector + 32U, "TINYGPT NEW", 11U);
     sector[32U + 11U] = 0x20;
     lba = start + 1U + (UINT64)fatSectors * 2U;
     if (partition_write_blocks(io, lba, GPT_SECTOR_SIZE, sector) != EFI_SUCCESS) return 0;
@@ -341,7 +341,7 @@ static int partition_add(UINT32 mebibytes, const char *requestedLabel, UINTN *pa
     entry = disk.entries + slot * disk.entrySize;
     memory_zero(entry, disk.entrySize);
     memory_copy(entry, &gFatPartitionGuid, 16U);
-    unique.Data1 = 0x5441524dU ^ (UINT32)timer_count();
+    unique.Data1 = 0x54475054U ^ (UINT32)timer_count();
     unique.Data2 = (UINT16)(start ^ (start >> 16));
     unique.Data3 = (UINT16)(((sectors ^ (sectors >> 16)) & 0x0fffU) | 0x4000U);
     memory_zero(unique.Data4, sizeof(unique.Data4));
@@ -371,7 +371,7 @@ static const char *partition_error_text(void) {
     if (gPartitionError == 3U) return "the new FAT filesystem could not be written";
     if (gPartitionError == 4U) return "the mirrored GPT transaction could not be committed";
     if (gPartitionError == 5U) return "partition created, but its recovery registry entry could not be saved";
-    return "the TinyArmOS boot disk is unavailable, read-only, or has an unsupported GPT layout";
+    return "the TinyGPT boot disk is unavailable, read-only, or has an unsupported GPT layout";
 }
 
 static int partition_update_fat_label(PARTITION_DISK *disk, UINT64 start, const char label[12]) {

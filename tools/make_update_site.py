@@ -12,23 +12,23 @@ from pathlib import Path
 from typing import Dict, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
-UPDATER = runpy.run_path(str(ROOT / "tinyarmos"), run_name="update_site_validation")
+UPDATER = runpy.run_path(str(ROOT / "tinygpt"), run_name="update_site_validation")
 CHANNELS = {
     "main": {
-        "manifest": "TinyArmOS-update.txt",
-        "binary": "TinyArmOS-v{version}-BOOTAA64.EFI",
+        "manifest": "TinyGPT-update.txt",
+        "binary": "TinyGPT-v{version}-BOOTAA64.EFI",
         "url": (
-            "https://firesafetylite.github.io/TinyArmOS/"
-            "TinyArmOS-latest-BOOTAA64.EFI"
+            "https://firesafetylite.github.io/TinyGPT/"
+            "TinyGPT-latest-BOOTAA64.EFI"
         ),
         "directory": "",
     },
     "nightly": {
-        "manifest": "TinyArmOS-nightly-update.txt",
-        "binary": "TinyArmOS-nightly-BOOTAA64.EFI",
+        "manifest": "TinyGPT-nightly-update.txt",
+        "binary": "TinyGPT-nightly-BOOTAA64.EFI",
         "url": (
-            "https://firesafetylite.github.io/TinyArmOS/nightly/"
-            "TinyArmOS-latest-BOOTAA64.EFI"
+            "https://firesafetylite.github.io/TinyGPT/nightly/"
+            "TinyGPT-latest-BOOTAA64.EFI"
         ),
         "directory": "nightly",
     },
@@ -87,8 +87,8 @@ def publish_channel(source: Path, output: Path, channel: str) -> None:
         raise SiteError(str(error)) from error
     destination = output / str(config["directory"])
     destination.mkdir(parents=True, exist_ok=True)
-    (destination / "TinyArmOS-latest-BOOTAA64.EFI").write_bytes(data)
-    (destination / "TinyArmOS-update.txt").write_text(
+    (destination / "TinyGPT-latest-BOOTAA64.EFI").write_bytes(data)
+    (destination / "TinyGPT-update.txt").write_text(
         f"version={entries['version']}\n"
         f"size={len(data)}\n"
         f"sha256={digest}\n"
@@ -109,16 +109,16 @@ def build_site(main: Path, output: Path, nightly: Optional[Path] = None) -> None
         assert nightly is not None
         publish_channel(nightly, output, "nightly")
     nightly_link = (
-        '<li><a href="nightly/TinyArmOS-update.txt">Nightly beta manifest</a></li>'
+        '<li><a href="nightly/TinyGPT-update.txt">Nightly beta manifest</a></li>'
         if has_nightly
         else ""
     )
     (output / "index.html").write_text(
         "<!doctype html>\n"
         '<meta charset="utf-8">\n'
-        "<title>TinyArmOS update channels</title>\n"
-        "<h1>TinyArmOS update channels</h1>\n"
-        '<ul><li><a href="TinyArmOS-update.txt">Main manifest</a></li>'
+        "<title>TinyGPT update channels</title>\n"
+        "<h1>TinyGPT update channels</h1>\n"
+        '<ul><li><a href="TinyGPT-update.txt">Main manifest</a></li>'
         f"{nightly_link}</ul>\n",
         encoding="utf-8",
     )

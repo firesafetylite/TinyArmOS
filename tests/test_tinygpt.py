@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-UPDATER = runpy.run_path(str(ROOT / "tinyarmos"), run_name="tinyarmos_module")
+UPDATER = runpy.run_path(str(ROOT / "tinygpt"), run_name="tinygpt_module")
 IMAGE_BUILDER = runpy.run_path(
     str(ROOT / "tools" / "make_image.py"), run_name="image_builder_module"
 )
@@ -20,7 +20,7 @@ SITE_BUILDER = runpy.run_path(
 
 def fake_efi(version: str, size: int = 4096, channel: str = "main") -> bytes:
     marker = (
-        f"TinyArmOS {version}\n"
+        f"TinyGPT {version}\n"
         "architecture=ARM64\n"
         "firmware=UEFI\n"
     ).encode("ascii")
@@ -37,8 +37,8 @@ def fake_efi(version: str, size: int = 4096, channel: str = "main") -> bytes:
     struct.pack_into("<H", payload, optional_offset + 68, 10)
     payload[512 : 512 + len(marker)] = marker
     metadata = (
-        f"TinyArmOSBuildVersion={version}\n"
-        f"TinyArmOSBuildChannel={channel}\n"
+        f"TinyGPTBuildVersion={version}\n"
+        f"TinyGPTBuildChannel={channel}\n"
     ).encode("ascii")
     payload[768 : 768 + len(metadata)] = metadata
     return bytes(payload)
@@ -46,6 +46,7 @@ def fake_efi(version: str, size: int = 4096, channel: str = "main") -> bytes:
 
 class UpdaterTests(unittest.TestCase):
     def test_version_and_efi_validation(self) -> None:
+        self.assertEqual(UPDATER["USER_AGENT"], "TinyGPT-Host-Updater/0.1.6")
         image = fake_efi("0.1")
         self.assertEqual(UPDATER["version_tuple"]("0.1"), (0, 1, 0))
         self.assertEqual(UPDATER["version_tuple"]("0.1.1"), (0, 1, 1))
@@ -67,9 +68,9 @@ class UpdaterTests(unittest.TestCase):
 
     def test_checksum_parser_requires_exact_asset(self) -> None:
         digest = "a" * 64
-        text = f"{digest}  TinyArmOS-v1.2.3-BOOTAA64.EFI\n".encode("ascii")
+        text = f"{digest}  TinyGPT-v1.2.3-BOOTAA64.EFI\n".encode("ascii")
         self.assertEqual(
-            UPDATER["checksum_for"](text, "TinyArmOS-v1.2.3-BOOTAA64.EFI"),
+            UPDATER["checksum_for"](text, "TinyGPT-v1.2.3-BOOTAA64.EFI"),
             digest,
         )
         with self.assertRaises(UPDATER["UpdateError"]):
@@ -86,9 +87,9 @@ class UpdaterTests(unittest.TestCase):
         )
 
     def test_release_assets_select_main_and_nightly_channels(self) -> None:
-        stable_name = "TinyArmOS-v1.2.3-BOOTAA64.EFI"
-        nightly_name = "TinyArmOS-nightly-BOOTAA64.EFI"
-        nightly_manifest = "TinyArmOS-nightly-update.txt"
+        stable_name = "TinyGPT-v1.2.3-BOOTAA64.EFI"
+        nightly_name = "TinyGPT-nightly-BOOTAA64.EFI"
+        nightly_manifest = "TinyGPT-nightly-update.txt"
         manifest_url = f"https://github.com/test/{nightly_manifest}"
         releases = {
             UPDATER["MAIN_RELEASE_URL"]: {
@@ -152,25 +153,25 @@ class UpdaterTests(unittest.TestCase):
                     "main",
                     main,
                     "1.2.3",
-                    "TinyArmOS-v1.2.3-BOOTAA64.EFI",
-                    "https://firesafetylite.github.io/TinyArmOS/"
-                    "TinyArmOS-latest-BOOTAA64.EFI",
+                    "TinyGPT-v1.2.3-BOOTAA64.EFI",
+                    "https://firesafetylite.github.io/TinyGPT/"
+                    "TinyGPT-latest-BOOTAA64.EFI",
                 ),
                 (
                     "nightly",
                     nightly,
                     "1.3.0",
-                    "TinyArmOS-nightly-BOOTAA64.EFI",
-                    "https://firesafetylite.github.io/TinyArmOS/nightly/"
-                    "TinyArmOS-latest-BOOTAA64.EFI",
+                    "TinyGPT-nightly-BOOTAA64.EFI",
+                    "https://firesafetylite.github.io/TinyGPT/nightly/"
+                    "TinyGPT-latest-BOOTAA64.EFI",
                 ),
             ):
                 image = fake_efi(version, channel=channel)
                 (source / filename).write_bytes(image)
                 manifest_name = (
-                    "TinyArmOS-update.txt"
+                    "TinyGPT-update.txt"
                     if channel == "main"
-                    else "TinyArmOS-nightly-update.txt"
+                    else "TinyGPT-nightly-update.txt"
                 )
                 (source / manifest_name).write_text(
                     f"version={version}\n"
@@ -181,11 +182,11 @@ class UpdaterTests(unittest.TestCase):
                 )
             SITE_BUILDER["build_site"](main, output, nightly)
             self.assertEqual(
-                (output / "TinyArmOS-latest-BOOTAA64.EFI").read_bytes(),
+                (output / "TinyGPT-latest-BOOTAA64.EFI").read_bytes(),
                 fake_efi("1.2.3"),
             )
             self.assertEqual(
-                (output / "nightly" / "TinyArmOS-latest-BOOTAA64.EFI").read_bytes(),
+                (output / "nightly" / "TinyGPT-latest-BOOTAA64.EFI").read_bytes(),
                 fake_efi("1.3.0", channel="nightly"),
             )
             self.assertIn("Main manifest", (output / "index.html").read_text())
@@ -199,7 +200,7 @@ class UpdaterTests(unittest.TestCase):
             wad = b"FREEDOOM-TEST" * 1000
             old_path = root / "old.EFI"
             wad_path = root / "doom.wad"
-            disk_path = root / "TinyArmOS.img"
+            disk_path = root / "TinyGPT.img"
             old_path.write_bytes(old_efi)
             wad_path.write_bytes(wad)
             IMAGE_BUILDER["build_image"](old_path, disk_path, wad_path)
@@ -226,8 +227,8 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(before.read_file(UPDATER["BOOT_PATH"]), old_efi)
             self.assertEqual(before_system.read_file((b"DOOMU   WAD",)), wad)
             self.assertEqual(
-                before_system.read_file((b"TINYOS  NEW",)),
-                b"Initialize TinyArmOS on first boot\n",
+                before_system.read_file((b"TINYGPT NEW",)),
+                b"Initialize TinyGPT on first boot\n",
             )
             startup = before.read_file((b"STARTUP NSH",))
 
@@ -238,8 +239,8 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(after.read_file(UPDATER["BOOT_PATH"]), new_efi)
             self.assertEqual(after_system.read_file((b"DOOMU   WAD",)), wad)
             self.assertEqual(
-                after_system.read_file((b"TINYOS  NEW",)),
-                b"Initialize TinyArmOS on first boot\n",
+                after_system.read_file((b"TINYGPT NEW",)),
+                b"Initialize TinyGPT on first boot\n",
             )
             self.assertEqual(after.read_file((b"STARTUP NSH",)), startup)
             backed_up = UPDATER["Fat32Image"](backup.read_bytes())
@@ -247,7 +248,7 @@ class UpdaterTests(unittest.TestCase):
 
     def test_legacy_utm_target_resolves_to_disk(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            bundle = Path(directory) / "TinyArmOS.utm"
+            bundle = Path(directory) / "TinyGPT.utm"
             images = bundle / "Images"
             images.mkdir(parents=True)
             disk = images / "disk-0.img"

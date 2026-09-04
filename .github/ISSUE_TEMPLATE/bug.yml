@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible TinyArmOS problem.
+description: Report a reproducible TinyGPT problem.
 title: "[Bug]: "
 labels:
   - bug
@@ -10,7 +10,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: TinyArmOS version
+      label: TinyGPT version
       description: Release tag or source revision.
       placeholder: v0.1.4
     validations:

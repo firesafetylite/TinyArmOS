@@ -304,7 +304,7 @@ static int doom_run(void) {
     char *argv[] = {arg0};
     EFI_INPUT_KEY input;
     if (gDoomStarted) {
-        print("Doom can run once per boot; reboot TinyArmOS to play again.\n");
+        print("Doom can run once per boot; reboot TinyGPT to play again.\n");
         return 0;
     }
     if (!doom_wad_available()) {

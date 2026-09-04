@@ -29,7 +29,7 @@ def source_block(start: str, end: str) -> str:
 
 class ShellSourceTests(unittest.TestCase):
     def test_release_version(self) -> None:
-        self.assertIn('#define TINYARMOS_VERSION "0.1.5"', SOURCE)
+        self.assertIn('#define TINYGPT_VERSION "0.1.6"', SOURCE)
 
     def test_main_help_documents_every_canonical_command(self) -> None:
         help_text = source_block(
@@ -43,24 +43,14 @@ class ShellSourceTests(unittest.TestCase):
             "echo [TEXT]",
             "info",
             "uptime",
-            "count",
             "partitions",
             "pwd",
             "ls [PATH]",
             "tree [PATH]",
-            "sysfiles",
-            "apps",
-            "home",
-            "root",
-            "up",
-            "back",
-            "go [PLACE|PATH]",
             "cd [PATH|-]",
-            "open [PATH]",
             "cat PATH",
-            "write PATH TEXT",
+            "write PATH [TEXT]",
             "append PATH TEXT",
-            "touch PATH",
             "mkdir PATH",
             "rm PATH",
             "rm -rf PATH",
@@ -69,9 +59,7 @@ class ShellSourceTests(unittest.TestCase):
             "mv SOURCE DEST",
             "stat PATH",
             "df",
-            "sync",
             "fsck",
-            "fault PATH",
             "textedit [PATH]",
             "doom",
             "settings",
@@ -83,6 +71,11 @@ class ShellSourceTests(unittest.TestCase):
         for command in commands:
             with self.subTest(command=command):
                 self.assertIn(command, help_text)
+        self.assertIn(
+            "rm -rf PATH          recursively remove a directory tree\\n\"\n"
+            "        \"  rmdir PATH",
+            help_text,
+        )
 
     def test_pre_os_help_documents_every_recovery_command(self) -> None:
         help_text = source_block(
@@ -133,7 +126,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("fs_scan_integrity(0);", boot)
         self.assertLess(
             boot.index("fs_scan_integrity(0);"),
-            boot.index('boot_stage(5, "TinyArmOS operating system"'),
+            boot.index('boot_stage(5, "TinyGPT operating system"'),
         )
         self.assertIn("fs_scan_integrity(1);", pre_os)
 
@@ -155,8 +148,8 @@ class ShellSourceTests(unittest.TestCase):
         self.assertNotIn("Selected partition ", menu)
         self.assertIn("targetPartition = pre_os_boot_prompt();", boot)
         self.assertIn("if (targetPartition == 1U) return 1;", boot)
-        self.assertIn("=== TinyArmOS Pre-OS Environment ===", pre_os)
-        self.assertIn("TinyArmOS has not started", pre_os)
+        self.assertIn("=== TinyGPT Pre-OS Environment ===", pre_os)
+        self.assertIn("TinyGPT has not started", pre_os)
         self.assertIn("if (!gScrollbackEnabled) scrollback_enable();", pre_os)
         self.assertLess(entry.index("pre_os_environment();"), entry.index("settings_load();"))
 
@@ -228,7 +221,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("fs_commit();", migration_commit)
 
     def test_recovery_is_pre_os_only_not_an_in_os_command(self) -> None:
-        for removed in ("Recovery Agent", "recovery_agent", "recovery_help", "TinyArmOS Boot Manager"):
+        for removed in ("Recovery Agent", "recovery_agent", "recovery_help", "TinyGPT Boot Manager"):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, SOURCE)
         dispatch = source_block(
@@ -247,7 +240,7 @@ class ShellSourceTests(unittest.TestCase):
             '} else if (streq(command, "pwd"))', 1
         )[0]
         self.assertIn("pre_os_print_partitions(gActivePartition)", command)
-        self.assertIn("read-only from TinyArmOS", command)
+        self.assertIn("read-only from TinyGPT", command)
         self.assertIn("press R", command)
         self.assertNotIn("partition_add", command)
         self.assertNotIn("partition_rename", command)
@@ -267,6 +260,18 @@ class ShellSourceTests(unittest.TestCase):
             "system",
             "view",
             "rename",
+            "count",
+            "sysfiles",
+            "apps",
+            "home",
+            "root",
+            "up",
+            "back",
+            "go",
+            "open",
+            "touch",
+            "sync",
+            "fault",
             "edit",
             "freedoom",
             "run doom",
@@ -279,6 +284,14 @@ class ShellSourceTests(unittest.TestCase):
                 pattern = rf"(?:streq|starts_with)\(command, \"{re.escape(alias)}(?: )?\"\)"
                 self.assertIsNone(re.search(pattern, dispatch))
         self.assertNotIn('starts_with(command, "run ")', dispatch)
+
+    def test_dead_loaded_image_tracking_is_removed(self) -> None:
+        self.assertNotIn("gLoadedImagePath", SOURCE)
+        self.assertNotIn("storage_capture_loaded_path", SOURCE)
+
+    def test_runtime_settings_are_applied_once_before_the_shell(self) -> None:
+        entry = SOURCE.split("EFI_STATUS EFIAPI EfiMain", 1)[1]
+        self.assertEqual(entry.count("settings_apply_runtime();"), 1)
 
     def test_exact_root_recursive_remove_destroys_os_but_leaves_pre_os(self) -> None:
         remove_dispatch = source_block(
@@ -305,7 +318,7 @@ class ShellSourceTests(unittest.TestCase):
 
     def test_os_wipe_uses_dedicated_volume_identity_and_recursive_delete(self) -> None:
         self.assertIn("return gActivePartition >= 2U", SOURCE)
-        self.assertIn('storage_volume_has_label(gBootVolumeRoot, "TINYARMOS")', SOURCE)
+        self.assertIn('storage_volume_has_label(gBootVolumeRoot, "TINYGPT")', SOURCE)
         wipe = source_block(
             "static int storage_wipe_directory(",
             "static int storage_delete_path(",
@@ -337,7 +350,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("partition_rename(partition", pre_os)
         self.assertIn("gFatPartitionGuid", PARTITION_SOURCE)
         self.assertIn("partition_format_fat16", PARTITION_SOURCE)
-        self.assertIn('memory_copy(sector + 32U, "TINYOS  NEW", 11U)', PARTITION_SOURCE)
+        self.assertIn('memory_copy(sector + 32U, "TINYGPT NEW", 11U)', PARTITION_SOURCE)
         self.assertIn("sector[32U + 11U] = 0x20", PARTITION_SOURCE)
         self.assertLess(
             PARTITION_SOURCE.index("disk->backupEntriesLba"),
@@ -402,7 +415,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn('#include "editor.inc"', SOURCE)
         self.assertIn('fs_ensure_dir((UINTN)apps, "editor", FS_PROTECTED)', restore)
         self.assertIn("editor    command: textedit [PATH]", restore)
-        self.assertIn("TinyArmOS Text Editor", restore)
+        self.assertIn("TinyGPT Text Editor", restore)
         self.assertIn("!streq(gNodes[previousEditorInfo].data, editorAppInfo)", restore)
         self.assertIn('streq(command, "textedit")', dispatch)
         self.assertIn("command_textedit(command)", dispatch)
@@ -463,9 +476,17 @@ class ShellSourceTests(unittest.TestCase):
         )
         self.assertIn("Changes save automatically", settings_ui)
         self.assertIn("Return to shell", settings_ui)
+        self.assertIn("Background color", settings_ui)
+        self.assertIn("settings_choose_background(&gSettings.backgroundColor)", settings_ui)
+        self.assertIn("background_color", SOURCE)
+        self.assertIn("settings_text_attribute", settings_ui)
+        self.assertIn("color == gSettings.textColor || color == gSettings.accentColor", settings_ui)
+        self.assertIn("Unknown selection; choose 0 through 7.", settings_ui)
+        self.assertIn("Invalid background; choose 1 through 8.", settings_ui)
         self.assertIn("gST->ConOut->ClearScreen", settings_ui)
         self.assertIn("settings_save_notice()", settings_ui)
         self.assertNotIn("Save and exit", settings_ui)
+        self.assertIn("OS console background color", README)
 
     def test_update_command_routes_main_and_nightly_channels(self) -> None:
         dispatch = source_block(
@@ -482,42 +503,51 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("command_update(checkOnly, nightly);", dispatch)
         self.assertIn("UPDATE_MAIN_MANIFEST_URL", UPDATE_SOURCE)
         self.assertIn("UPDATE_NIGHTLY_MANIFEST_URL", UPDATE_SOURCE)
-        self.assertIn("nightly/TinyArmOS-update.txt", UPDATE_SOURCE)
+        self.assertIn("nightly/TinyGPT-update.txt", UPDATE_SOURCE)
         self.assertIn("update_digest_equal(currentDigest, manifest.digest)", UPDATE_SOURCE)
-        self.assertIn("TINYARMOS_DISPLAY_VERSION", UPDATE_SOURCE)
-        self.assertIn('TINYARMOS_BUILD_CHANNEL "main"', SOURCE)
+        self.assertIn("TINYGPT_DISPLAY_VERSION", UPDATE_SOURCE)
+        self.assertIn('TINYGPT_BUILD_CHANNEL "main"', SOURCE)
 
     def test_nightly_pipeline_keeps_main_and_beta_channels_separate(self) -> None:
         self.assertIn("branches:\n      - nightly", NIGHTLY_WORKFLOW)
         self.assertIn("gh release create nightly", NIGHTLY_WORKFLOW)
-        self.assertIn("TinyArmOS-nightly.img", NIGHTLY_WORKFLOW)
-        self.assertIn("TinyArmOS-nightly-BOOTAA64.EFI", NIGHTLY_WORKFLOW)
-        self.assertNotIn("TinyArmOS-v${VERSION}-nightly", NIGHTLY_WORKFLOW)
-        self.assertIn("TINYARMOS_BUILD_CHANNEL: nightly", NIGHTLY_WORKFLOW)
-        self.assertIn('--title "TinyArmOS nightly"', NIGHTLY_WORKFLOW)
+        self.assertIn("TinyGPT-nightly.img", NIGHTLY_WORKFLOW)
+        self.assertIn("TinyGPT-nightly-BOOTAA64.EFI", NIGHTLY_WORKFLOW)
+        self.assertNotIn("TinyGPT-v${VERSION}-nightly", NIGHTLY_WORKFLOW)
+        self.assertIn("TINYGPT_BUILD_CHANNEL: nightly", NIGHTLY_WORKFLOW)
+        self.assertIn('--title "TinyGPT nightly"', NIGHTLY_WORKFLOW)
         self.assertIn("--prerelease", NIGHTLY_WORKFLOW)
+        self.assertIn("cancel-in-progress: false", NIGHTLY_WORKFLOW)
+        self.assertNotIn("gh release delete-asset", NIGHTLY_WORKFLOW)
+        self.assertNotIn("pages: write", NIGHTLY_WORKFLOW)
+        self.assertIn("event_type=nightly-published", NIGHTLY_WORKFLOW)
         self.assertIn("git merge-base --is-ancestor", RELEASE_WORKFLOW)
-        self.assertIn("TinyArmOS-nightly-update.txt", PAGES_WORKFLOW)
+        self.assertIn('--target "$GITHUB_SHA"', RELEASE_WORKFLOW)
+        self.assertIn("event_type=release-published", RELEASE_WORKFLOW)
+        self.assertIn("repository_dispatch:", PAGES_WORKFLOW)
+        self.assertNotIn("workflow_run:", PAGES_WORKFLOW)
+        self.assertIn("ref: main", PAGES_WORKFLOW)
+        self.assertIn("TinyGPT-nightly-update.txt", PAGES_WORKFLOW)
         self.assertIn("--main release-main --nightly release-nightly", PAGES_WORKFLOW)
 
     def test_img_is_the_only_maintained_boot_distribution(self) -> None:
         self.assertIn(
-            "tools/make_image.py build/BOOTAA64.EFI build/TinyArmOS.img",
+            "tools/make_image.py build/BOOTAA64.EFI build/TinyGPT.img",
             BUILD_SCRIPT,
         )
         self.assertNotIn("make_utm_bundle.py", BUILD_SCRIPT)
         self.assertIn(
-            'cp build/TinyArmOS.img "dist/TinyArmOS-${tag}.img"',
+            'cp build/TinyGPT.img "dist/TinyGPT-${tag}.img"',
             RELEASE_WORKFLOW,
         )
         self.assertNotIn("UTM.utm.zip", RELEASE_WORKFLOW)
         self.assertFalse((ROOT / "tools" / "make_utm_bundle.py").exists())
 
     def test_readme_keeps_user_disclaimer(self) -> None:
-        self.assertIn(
-            "DISCLAIMER: TinyArmOS is a project fully managed by ChatGPT codex",
-            README,
-        )
+        disclaimer = next(line for line in README.splitlines() if line)
+        self.assertTrue(disclaimer.startswith("# (DISCLAIMER:"))
+        self.assertIn("fully managed by ChatGPT codex", disclaimer)
+        self.assertIn("8minecraft.19@gmail.com", disclaimer)
 
 
 if __name__ == "__main__":

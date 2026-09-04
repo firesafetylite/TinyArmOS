@@ -2,18 +2,18 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-output="${1:-$repo_root/build/TinyArmOS-QEMU_EFI.fd}"
+output="${1:-$repo_root/build/TinyGPT-QEMU_EFI.fd}"
 case "$output" in
   /*) ;;
   *) output="$(pwd)/$output" ;;
 esac
-work="${TINYARMOS_EDK2_WORK:-${TMPDIR:-/tmp}/tinyarmos-edk2-build}"
+work="${TINYGPT_EDK2_WORK:-${TMPDIR:-/tmp}/tinygpt-edk2-build}"
 edk2_ref="edk2-stable202508"
 edk2_commit="d46aa46c8361194521391aa581593e556c707c6e"
 
 for command in git make python3 aarch64-linux-gnu-gcc; do
   command -v "$command" >/dev/null || {
-    echo "$command is required to build the TinyArmOS UEFI firmware." >&2
+    echo "$command is required to build the TinyGPT UEFI firmware." >&2
     exit 1
   }
 done
@@ -26,8 +26,8 @@ cd "$work/edk2"
 test "$(git rev-parse HEAD)" = "$edk2_commit"
 
 python3 "$repo_root/tools/make_uefi_ca_bundle.py" \
-  "$work/TinyArmOS-ca-certs.esl" \
-  OvmfPkg/Library/TlsAuthConfigLib/TinyArmCaCerts.inc \
+  "$work/TinyGPT-ca-certs.esl" \
+  OvmfPkg/Library/TlsAuthConfigLib/TinyGPTCaCerts.inc \
   "$repo_root/firmware/certs/usertrust-rsa-certification-authority.pem" \
   "$repo_root/firmware/certs/usertrust-ecc-certification-authority.pem" \
   "$repo_root/firmware/certs/isrg-root-x1.pem"
@@ -61,7 +61,7 @@ text = text.replace(
 )
 text = text.replace(
     "#include <Library/UefiRuntimeServicesTableLib.h>\n",
-    "#include <Library/UefiRuntimeServicesTableLib.h>\n\n#include \"TinyArmCaCerts.inc\"\n",
+    "#include <Library/UefiRuntimeServicesTableLib.h>\n\n#include \"TinyGPTCaCerts.inc\"\n",
     1,
 )
 text = text.replace(
@@ -91,11 +91,11 @@ new = '''  UseBuiltInCaCerts = FALSE;
              &HttpsCaCertsSize
              );
   if (EFI_ERROR (Status)) {
-    HttpsCaCertsSize  = sizeof (mTinyArmCaCerts);
+    HttpsCaCertsSize  = sizeof (mTinyGPTCaCerts);
     UseBuiltInCaCerts = TRUE;
     DEBUG ((
       DEBUG_VERBOSE,
-      "%a:%a: using TinyArmOS built-in CA cert list\\n",
+      "%a:%a: using TinyGPT built-in CA cert list\\n",
       gEfiCallerBaseName,
       __func__
       ));
@@ -107,7 +107,7 @@ text = text.replace(old, new, 1)
 text = text.replace(
     "  QemuFwCfgSelectItem (HttpsCaCertsItem);\n  QemuFwCfgReadBytes (HttpsCaCertsSize, HttpsCaCerts);\n",
     "  if (UseBuiltInCaCerts) {\n"
-    "    CopyMem (HttpsCaCerts, mTinyArmCaCerts, HttpsCaCertsSize);\n"
+    "    CopyMem (HttpsCaCerts, mTinyGPTCaCerts, HttpsCaCertsSize);\n"
     "  } else {\n"
     "    QemuFwCfgSelectItem (HttpsCaCertsItem);\n"
     "    QemuFwCfgReadBytes (HttpsCaCertsSize, HttpsCaCerts);\n"
@@ -117,7 +117,7 @@ text = text.replace(
 path.write_text(text)
 PY
 
-touch -d "@$(git show -s --format=%ct HEAD)" OvmfPkg/Library/TlsAuthConfigLib/TinyArmCaCerts.inc
+touch -d "@$(git show -s --format=%ct HEAD)" OvmfPkg/Library/TlsAuthConfigLib/TinyGPTCaCerts.inc
 make -C BaseTools -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 export PYTHON_COMMAND=python3
 set +u
@@ -127,7 +127,7 @@ set -u
 export GCC5_AARCH64_PREFIX="${GCC5_AARCH64_PREFIX:-aarch64-linux-gnu-}"
 export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
 build -a AARCH64 -t GCC5 -b RELEASE -p ArmVirtPkg/ArmVirtQemu.dsc \
-  -D FIRMWARE_VER=TinyArmOS-EDK2-202508 \
+  -D FIRMWARE_VER=TinyGPT-EDK2-202508 \
   -D NETWORK_HTTP_ENABLE=TRUE \
   -D NETWORK_HTTP_BOOT_ENABLE=FALSE \
   -D NETWORK_TLS_ENABLE=TRUE \
@@ -151,5 +151,5 @@ cp "$firmware" "$output"
 truncate -s 67108864 "$output"
 cp "$variables" "${output%.fd}-vars.fd"
 truncate -s 67108864 "${output%.fd}-vars.fd"
-cp "$work/TinyArmOS-ca-certs.esl" "${output%.fd}-ca-certs.esl"
+cp "$work/TinyGPT-ca-certs.esl" "${output%.fd}-ca-certs.esl"
 sha256sum "$output" "${output%.fd}-vars.fd" "${output%.fd}-ca-certs.esl"

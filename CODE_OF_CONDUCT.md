@@ -2,7 +2,7 @@
 
 ## Our standard
 
-TinyArmOS welcomes respectful, constructive participation. Examples of expected behavior include:
+TinyGPT welcomes respectful, constructive participation. Examples of expected behavior include:
 
 - discussing technical ideas without personal attacks;
 - giving and accepting actionable feedback;

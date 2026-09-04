@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 30
     concurrency:
       group: nightly-release
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -24,6 +24,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -38,11 +39,11 @@ jobs:
       - name: Test
         run: |
           python -m unittest discover -s tests -v
-          python tinyarmos --help
+          python tinygpt --help
 
       - name: Build nightly image
         env:
-          TINYARMOS_BUILD_CHANNEL: nightly
+          TINYGPT_BUILD_CHANNEL: nightly
         run: make
 
       - name: Read and validate build version
@@ -54,17 +55,17 @@ jobs:
           import runpy
           from pathlib import Path
 
-          updater = runpy.run_path("tinyarmos", run_name="nightly_validation")
+          updater = runpy.run_path("tinygpt", run_name="nightly_validation")
           efi = Path("build/BOOTAA64.EFI").read_bytes()
           version = updater["validate_efi"](efi)
           assert updater["embedded_channel"](efi) == "nightly"
-          assert b"TinyArmOS nightly\narchitecture=ARM64" in efi
-          image = Path("build/TinyArmOS.img").read_bytes()
+          assert b"TinyGPT nightly\narchitecture=ARM64" in efi
+          image = Path("build/TinyGPT.img").read_bytes()
           assert len(image) == 128 * 1024 * 1024
           recovery = updater["Fat32Image"](image, 0)
           system = updater["Fat32Image"](image, 1)
           assert recovery.read_file(updater["BOOT_PATH"]) == efi
-          assert system.read_file((b"TINYOS  NEW",)) == b"Initialize TinyArmOS on first boot\n"
+          assert system.read_file((b"TINYGPT NEW",)) == b"Initialize TinyGPT on first boot\n"
           assert system.read_file((b"DOOMU   WAD",)).startswith(b"IWAD")
           print(version)
           PY
@@ -77,13 +78,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          efi_name="TinyArmOS-nightly-BOOTAA64.EFI"
+          efi_name="TinyGPT-nightly-BOOTAA64.EFI"
           mkdir -p dist
           cp build/BOOTAA64.EFI "dist/${efi_name}"
-          cp build/TinyArmOS.img "dist/TinyArmOS-nightly.img"
-          cp tinyarmos dist/tinyarmos
-          chmod +x dist/tinyarmos
-          zip -9 "dist/TinyArmOS-nightly-LICENSES.zip" \
+          cp build/TinyGPT.img "dist/TinyGPT-nightly.img"
+          cp tinygpt dist/tinygpt
+          chmod +x dist/tinygpt
+          zip -9 "dist/TinyGPT-nightly-LICENSES.zip" \
             LICENSE THIRD_PARTY_NOTICES.md \
             firmware/licenses/EDK2-LICENSE.txt \
             firmware/licenses/LIBFDT-LICENSE.txt \
@@ -95,16 +96,16 @@ jobs:
             assets/FREEDOOM-README.html
           efi_size="$(stat -c '%s' "dist/${efi_name}")"
           efi_sha256="$(sha256sum "dist/${efi_name}" | cut -d ' ' -f 1)"
-          cat > dist/TinyArmOS-nightly-update.txt <<EOF
+          cat > dist/TinyGPT-nightly-update.txt <<EOF
           version=${VERSION}
           size=${efi_size}
           sha256=${efi_sha256}
-          url=https://firesafetylite.github.io/TinyArmOS/nightly/TinyArmOS-latest-BOOTAA64.EFI
+          url=https://firesafetylite.github.io/TinyGPT/nightly/TinyGPT-latest-BOOTAA64.EFI
           EOF
           (
             cd dist
-            test "$(grep -c '^' TinyArmOS-nightly-update.txt)" -eq 4
-            sha256sum TinyArmOS-* tinyarmos > SHA256SUMS
+            test "$(grep -c '^' TinyGPT-nightly-update.txt)" -eq 4
+            sha256sum TinyGPT-* tinygpt > SHA256SUMS
             sha256sum --check SHA256SUMS
           )
 
@@ -114,71 +115,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git tag --force nightly "$GITHUB_SHA"
-          git push origin refs/tags/nightly --force
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref=refs/tags/nightly -f sha="$GITHUB_SHA" >/dev/null
+          fi
           if gh release view nightly >/dev/null 2>&1; then
-            while IFS= read -r asset; do
-              [[ -z "$asset" ]] || gh release delete-asset nightly "$asset" --yes
-            done < <(gh release view nightly --json assets --jq '.assets[].name')
+            gh release upload nightly \
+              dist/TinyGPT-nightly.img \
+              dist/TinyGPT-nightly-LICENSES.zip \
+              dist/tinygpt \
+              --clobber
+            gh release upload nightly dist/TinyGPT-nightly-BOOTAA64.EFI --clobber
+            gh release upload nightly dist/SHA256SUMS --clobber
+            gh release upload nightly dist/TinyGPT-nightly-update.txt --clobber
             gh release edit nightly \
-              --title "TinyArmOS nightly" \
+              --title "TinyGPT nightly" \
               --notes "Rolling beta build from the nightly branch at ${GITHUB_SHA}." \
               --prerelease
-            gh release upload nightly dist/* --clobber
           else
             gh release create nightly dist/* \
               --verify-tag \
-              --title "TinyArmOS nightly" \
+              --title "TinyGPT nightly" \
               --notes "Rolling beta build from the nightly branch at ${GITHUB_SHA}." \
               --prerelease
           fi
-
-  pages:
-    name: Publish main and nightly update channels
-    needs: release
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    concurrency:
-      group: github-pages
-      cancel-in-progress: true
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Check out channel publisher
-        uses: actions/checkout@v7
-
-      - name: Download and validate both channels
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          main_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
-          mkdir -p release-main release-nightly
-          gh release download "$main_tag" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'TinyArmOS-update.txt' \
-            --pattern 'TinyArmOS-v*-BOOTAA64.EFI' \
-            --dir release-main
-          gh release download nightly --repo "$GITHUB_REPOSITORY" \
-            --pattern 'TinyArmOS-nightly-update.txt' \
-            --pattern 'TinyArmOS-nightly-BOOTAA64.EFI' \
-            --dir release-nightly
-          python3 tools/make_update_site.py \
-            --main release-main --nightly release-nightly --output public
-
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload update channels
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: public
-
-      - name: Deploy update channels
-        id: deployment
-        uses: actions/deploy-pages@v4
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" \
+            -f event_type=nightly-published

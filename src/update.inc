@@ -1,10 +1,10 @@
-// TinyArmOS firmware-backed HTTPS updater.
+// TinyGPT firmware-backed HTTPS updater.
 // Uses UEFI HTTP/TLS services supplied by the VM firmware.
 
-#define UPDATE_MAIN_MANIFEST_URL "https://firesafetylite.github.io/TinyArmOS/TinyArmOS-update.txt"
-#define UPDATE_NIGHTLY_MANIFEST_URL "https://firesafetylite.github.io/TinyArmOS/nightly/TinyArmOS-update.txt"
-#define UPDATE_MAIN_IMAGE_URL "https://firesafetylite.github.io/TinyArmOS/TinyArmOS-latest-BOOTAA64.EFI"
-#define UPDATE_NIGHTLY_IMAGE_URL "https://firesafetylite.github.io/TinyArmOS/nightly/TinyArmOS-latest-BOOTAA64.EFI"
+#define UPDATE_MAIN_MANIFEST_URL "https://firesafetylite.github.io/TinyGPT/TinyGPT-update.txt"
+#define UPDATE_NIGHTLY_MANIFEST_URL "https://firesafetylite.github.io/TinyGPT/nightly/TinyGPT-update.txt"
+#define UPDATE_MAIN_IMAGE_URL "https://firesafetylite.github.io/TinyGPT/TinyGPT-latest-BOOTAA64.EFI"
+#define UPDATE_NIGHTLY_IMAGE_URL "https://firesafetylite.github.io/TinyGPT/nightly/TinyGPT-latest-BOOTAA64.EFI"
 #define UPDATE_MAX_MANIFEST_BYTES 4096U
 #define UPDATE_MAX_IMAGE_BYTES (8U * 1024U * 1024U)
 #define UPDATE_MAX_URL_BYTES 4096U
@@ -712,7 +712,7 @@ static EFI_STATUS update_http_fetch_once(const char *url, UINT8 *buffer, UINTN c
     requestHeaders[0].FieldName = "Host";
     requestHeaders[0].FieldValue = host;
     requestHeaders[1].FieldName = "User-Agent";
-    requestHeaders[1].FieldValue = "TinyArmOS-Updater/" TINYARMOS_DISPLAY_VERSION;
+    requestHeaders[1].FieldValue = "TinyGPT-Updater/" TINYGPT_DISPLAY_VERSION;
     requestHeaders[2].FieldName = "Accept";
     requestHeaders[2].FieldValue = "application/octet-stream";
     requestHeaders[3].FieldName = "Connection";
@@ -1068,10 +1068,10 @@ static void command_update(int checkOnly, int nightly) {
     print(" build: ");
     print(nightly ? "nightly" : manifest.version);
     print(" (current ");
-    print(TINYARMOS_DISPLAY_VERSION);
+    print(TINYGPT_DISPLAY_VERSION);
     print(")\n");
     {
-        int versionOrder = update_compare_versions(manifest.version, TINYARMOS_VERSION);
+        int versionOrder = update_compare_versions(manifest.version, TINYGPT_VERSION);
         if (versionOrder == 0) {
             UINTN currentSize = 0;
             UINT8 currentDigest[32];
@@ -1082,7 +1082,7 @@ static void command_update(int checkOnly, int nightly) {
             }
             if (currentSize == manifest.size &&
                 update_digest_equal(currentDigest, manifest.digest)) {
-                print("TinyArmOS is up to date on the selected channel.\n");
+                print("TinyGPT is up to date on the selected channel.\n");
                 goto cleanup;
             }
             print("The selected channel has a different build of this version.\n");
@@ -1129,9 +1129,9 @@ static void command_update(int checkOnly, int nightly) {
         update_print_status("Update installation", status);
         goto cleanup;
     }
-    print("TinyArmOS ");
+    print("TinyGPT ");
     print(nightly ? "nightly" : manifest.version);
-    print(" installed.\nThe running shell remains TinyArmOS " TINYARMOS_DISPLAY_VERSION " until reboot.\n");
+    print(" installed.\nThe running shell remains TinyGPT " TINYGPT_DISPLAY_VERSION " until reboot.\n");
     print("Type REBOOT to restart now: ");
     read_line(answer, sizeof(answer));
     if (streq(answer, "REBOOT")) {

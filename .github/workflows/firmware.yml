@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install EDK2 build dependencies
         run: |
@@ -32,23 +34,23 @@ jobs:
             acpica-tools build-essential gcc-aarch64-linux-gnu nasm uuid-dev
 
       - name: Build pinned firmware
-        run: tools/build_uefi_firmware.sh build/TinyArmOS-QEMU_EFI.fd
+        run: tools/build_uefi_firmware.sh build/TinyGPT-QEMU_EFI.fd
 
       - name: Verify firmware outputs
         run: |
-          test "$(stat -c '%s' build/TinyArmOS-QEMU_EFI.fd)" -eq 67108864
-          test "$(stat -c '%s' build/TinyArmOS-QEMU_EFI-vars.fd)" -eq 67108864
-          test -s build/TinyArmOS-QEMU_EFI-ca-certs.esl
-          test "$(stat -c '%s' build/TinyArmOS-QEMU_EFI-ca-certs.esl)" -eq 3688
-          sha256sum build/TinyArmOS-QEMU_EFI.fd build/TinyArmOS-QEMU_EFI-vars.fd build/TinyArmOS-QEMU_EFI-ca-certs.esl
+          test "$(stat -c '%s' build/TinyGPT-QEMU_EFI.fd)" -eq 67108864
+          test "$(stat -c '%s' build/TinyGPT-QEMU_EFI-vars.fd)" -eq 67108864
+          test -s build/TinyGPT-QEMU_EFI-ca-certs.esl
+          test "$(stat -c '%s' build/TinyGPT-QEMU_EFI-ca-certs.esl)" -eq 3688
+          sha256sum build/TinyGPT-QEMU_EFI.fd build/TinyGPT-QEMU_EFI-vars.fd build/TinyGPT-QEMU_EFI-ca-certs.esl
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TinyArmOS-UEFI-firmware
+          name: TinyGPT-UEFI-firmware
           path: |
-            build/TinyArmOS-QEMU_EFI.fd
-            build/TinyArmOS-QEMU_EFI-vars.fd
-            build/TinyArmOS-QEMU_EFI-ca-certs.esl
+            build/TinyGPT-QEMU_EFI.fd
+            build/TinyGPT-QEMU_EFI-vars.fd
+            build/TinyGPT-QEMU_EFI-ca-certs.esl
           if-no-files-found: error
           retention-days: 7

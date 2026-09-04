@@ -1,6 +1,6 @@
-# Contributing to TinyArmOS
+# Contributing to TinyGPT
 
-Thanks for helping improve TinyArmOS. Keep changes focused, explain their user-visible effect, and avoid committing generated files from `build/`.
+Thanks for helping improve TinyGPT. Keep changes focused, explain their user-visible effect, and avoid committing generated files from `build/`.
 
 ## Before opening a change
 
@@ -8,12 +8,12 @@ Thanks for helping improve TinyArmOS. Keep changes focused, explain their user-v
 2. Build with the supported toolchain:
 
    ```bash
-   python3 -m venv /tmp/tinyarmos-venv
-   /tmp/tinyarmos-venv/bin/pip install ziglang==0.14.1
-   PATH="/tmp/tinyarmos-venv/bin:$PATH" make
+   python3 -m venv /tmp/tinygpt-venv
+   /tmp/tinygpt-venv/bin/pip install ziglang==0.14.1
+   PATH="/tmp/tinygpt-venv/bin:$PATH" make
    ```
 
-3. Confirm that `build/BOOTAA64.EFI` and `build/TinyArmOS.img` were produced. When possible, attach the image to an ARM64 UEFI VM, boot it, and describe what you exercised.
+3. Confirm that `build/BOOTAA64.EFI` and `build/TinyGPT.img` were produced. When possible, attach the image to an ARM64 UEFI VM, boot it, and describe what you exercised.
 4. Run `make clean` after local testing; build outputs are deliberately ignored.
 
 ## Branch and release policy

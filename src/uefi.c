@@ -1,4 +1,4 @@
-// TinyArmOS: a freestanding ARM64 UEFI shell with a persistent mini filesystem.
+// TinyGPT: a freestanding ARM64 UEFI shell with a persistent mini filesystem.
 typedef unsigned char      UINT8;
 typedef unsigned short     UINT16;
 typedef unsigned int       UINT32;
@@ -28,17 +28,17 @@ typedef UINT64             EFI_STATUS;
 
 #define EVT_NOTIFY_SIGNAL 0x00000200U
 #define TPL_CALLBACK      8U
-#define TINYARMOS_VERSION "0.1.5"
-#ifndef TINYARMOS_DISPLAY_VERSION
-#define TINYARMOS_DISPLAY_VERSION TINYARMOS_VERSION
+#define TINYGPT_VERSION "0.1.6"
+#ifndef TINYGPT_DISPLAY_VERSION
+#define TINYGPT_DISPLAY_VERSION TINYGPT_VERSION
 #endif
-#ifndef TINYARMOS_BUILD_CHANNEL
-#define TINYARMOS_BUILD_CHANNEL "main"
+#ifndef TINYGPT_BUILD_CHANNEL
+#define TINYGPT_BUILD_CHANNEL "main"
 #endif
 
-static const char gTinyArmOSBuildMetadata[] __attribute__((used)) =
-    "TinyArmOSBuildVersion=" TINYARMOS_VERSION "\n"
-    "TinyArmOSBuildChannel=" TINYARMOS_BUILD_CHANNEL "\n";
+static const char gTinyGPTBuildMetadata[] __attribute__((used)) =
+    "TinyGPTBuildVersion=" TINYGPT_VERSION "\n"
+    "TinyGPTBuildChannel=" TINYGPT_BUILD_CHANNEL "\n";
 
 struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
 struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
@@ -327,6 +327,7 @@ typedef struct {
 #define FS_IMAGE_VERSION 3
 #define SETTINGS_DEFAULT_TEXT_COLOR 7U
 #define SETTINGS_DEFAULT_ACCENT_COLOR 11U
+#define SETTINGS_DEFAULT_BACKGROUND_COLOR 0U
 #define PARTITION_MAX 16U
 #define PARTITION_REGISTRY_MAGIC 0x31545250U
 
@@ -338,7 +339,6 @@ static char gPartitionNames[PARTITION_MAX][12];
 static UINTN gActivePartition;
 static UINT64 gStartTicks;
 static UINT64 gTimerHz;
-static UINT64 gCommands;
 static UINT64 gGeneration;
 static UINT64 gSlotGeneration[2];
 static UINT8 gSlotValid[2];
@@ -346,7 +346,6 @@ static UINT8 gStorageReady;
 static UINT8 gDedicatedStorage;
 static UINT8 gLegacySinglePartition;
 static UINT8 gProtectionUnlocked;
-static CHAR16 gLoadedImagePath[260];
 static UINTN gCwd;
 static UINTN gPreviousCwd;
 static char gScrollback[SCROLLBACK_LINES][SCROLLBACK_COLUMNS];
@@ -361,6 +360,7 @@ static UINT8 gScrollbackEnabled;
 typedef struct {
     UINT8 textColor;
     UINT8 accentColor;
+    UINT8 backgroundColor;
     UINT8 showPromptPath;
     UINT8 startupHome;
     UINT8 scrollback;
@@ -712,34 +712,6 @@ static int char16_equals_ascii(const CHAR16 *wide, const char *ascii) {
     return wide[index] == 0 && ascii[index] == 0;
 }
 
-static int storage_capture_loaded_path(void *filePath) {
-    UINT8 *node = (UINT8 *)filePath;
-    UINTN traversed = 0;
-    UINTN used = 0;
-    memory_zero(gLoadedImagePath, sizeof(gLoadedImagePath));
-    while (node && traversed + 4 <= 4096U) {
-        UINTN length = (UINTN)node[2] | ((UINTN)node[3] << 8);
-        if (length < 4 || traversed + length > 4096U) break;
-        if (node[0] == 0x7fU) break;
-        if (node[0] == 0x04U && node[1] == 0x04U) {
-            CHAR16 *segment = (CHAR16 *)(void *)(node + 4);
-            UINTN characters = (length - 4) / sizeof(CHAR16);
-            UINTN index;
-            for (index = 0; index < characters && segment[index]; index++) {
-                if (used + 1 >= sizeof(gLoadedImagePath) / sizeof(gLoadedImagePath[0])) {
-                    gLoadedImagePath[0] = 0;
-                    return 0;
-                }
-                gLoadedImagePath[used++] = segment[index];
-            }
-        }
-        traversed += length;
-        node += length;
-    }
-    gLoadedImagePath[used] = 0;
-    return used != 0;
-}
-
 static int storage_path_exists(const CHAR16 *path) {
     EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
     EFI_STATUS status;
@@ -775,7 +747,7 @@ typedef struct {
 static void partition_registry_defaults(void) {
     memory_zero(gPartitionNames, sizeof(gPartitionNames));
     string_copy(gPartitionNames[0], "TINYRECOV", sizeof(gPartitionNames[0]));
-    string_copy(gPartitionNames[1], "TINYARMOS", sizeof(gPartitionNames[1]));
+    string_copy(gPartitionNames[1], "TINYGPT", sizeof(gPartitionNames[1]));
 }
 
 static void partition_registry_load(void) {
@@ -877,14 +849,13 @@ static int storage_init(EFI_HANDLE imageHandle) {
     gLegacySinglePartition = 0;
     status = gST->BootServices->HandleProtocol(imageHandle, &loadedImageGuid, (void **)&loadedImage);
     if (status != EFI_SUCCESS || !loadedImage) return 0;
-    storage_capture_loaded_path(loadedImage->FilePath);
     status = gST->BootServices->HandleProtocol(loadedImage->DeviceHandle, &simpleFsGuid, (void **)&filesystem);
     if (status != EFI_SUCCESS || !filesystem) return 0;
     status = filesystem->OpenVolume(filesystem, &gBootVolumeRoot);
     if (status != EFI_SUCCESS || !gBootVolumeRoot) return 0;
     partition_registry_load();
     gPartitionRoots[0] = gBootVolumeRoot;
-    if (storage_volume_has_label(gBootVolumeRoot, "TINYARMOS")) {
+    if (storage_volume_has_label(gBootVolumeRoot, "TINYGPT")) {
         gPartitionRoots[1] = gBootVolumeRoot;
         gVolumeRoot = gBootVolumeRoot;
         gLegacySinglePartition = 1;
@@ -1146,7 +1117,7 @@ static void storage_delete_owned_startup(UINTN *removed, UINTN *failures) {
 }
 
 static int storage_set_os_missing(void) {
-    static const UINT8 marker[] = "TinyArmOS is not installed\n";
+    static const UINT8 marker[] = "TinyGPT is not installed\n";
     EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
     UINTN bytes = sizeof(marker) - 1U;
     EFI_STATUS status;
@@ -1495,7 +1466,7 @@ static int fs_restore_system(void) {
     int editorApp = -1;
     int shellApp = -1;
     const char *editorAppInfo =
-        "name=TinyArmOS Text Editor\nkind=native full-screen app\ncommand=textedit [PATH]\nfile_picker=interactive when PATH is omitted\nformat=ASCII text\ndisplay_wrap=soft at screen edge\nscroll=Up/Down arrow keys\nfile_limit=8191 bytes\nprotected_paths=require protect unlock";
+        "name=TinyGPT Text Editor\nkind=native full-screen app\ncommand=textedit [PATH]\nfile_picker=interactive when PATH is omitted\nformat=ASCII text\ndisplay_wrap=soft at screen edge\nscroll=Up/Down arrow keys\nfile_limit=8191 bytes\nprotected_paths=require protect unlock";
     fs_ensure_dir(FS_ROOT, "tmp", 0);
     fs_ensure_dir(FS_ROOT, "lost+found", FS_PROTECTED);
     if (system >= 0) {
@@ -1507,7 +1478,7 @@ static int fs_restore_system(void) {
         runtime = fs_ensure_dir((UINTN)system, "runtime", FS_PROTECTED);
         security = fs_ensure_dir((UINTN)system, "security", FS_PROTECTED);
         fs_ensure_file((UINTN)system, "version.txt",
-            "TinyArmOS " TINYARMOS_DISPLAY_VERSION "\narchitecture=ARM64\nfirmware=UEFI\nkernel=freestanding\nfilesystem=MiniFS2\nunix=no", FS_PROTECTED);
+            "TinyGPT " TINYGPT_DISPLAY_VERSION "\narchitecture=ARM64\nfirmware=UEFI\nkernel=freestanding\nfilesystem=MiniFS2\nunix=no", FS_PROTECTED);
         fs_ensure_file((UINTN)system, "manifest.txt",
             "Critical tree:\n/system/boot       loader and pre-OS handoff records\n/system/kernel     core, ABI, and memory records\n/system/firmware   UEFI interface records\n/system/config     boot and shell policy\n/system/drivers    hardware service records\n/system/runtime    MiniFS2 runtime records\n/system/security   integrity and protected paths\n/apps              installed native applications", FS_PROTECTED);
     }
@@ -1522,15 +1493,15 @@ static int fs_restore_system(void) {
         fs_ensure_file((UINTN)boot, "startup.nsh.info",
             "critical=yes\nfirmware fallback=FS0:\\EFI\\BOOT\\BOOTAA64.EFI", FS_PROTECTED);
         fs_ensure_file((UINTN)boot, "boot-chain.info",
-            "UEFI firmware -> BOOTAA64.EFI pre-OS environment -> verified TinyArmOS shell", FS_PROTECTED);
+            "UEFI firmware -> BOOTAA64.EFI pre-OS environment -> verified TinyGPT shell", FS_PROTECTED);
         fs_ensure_file((UINTN)boot, "pre-os.info",
-            "name=TinyArmOS Pre-OS Environment\nphase=before operating system\nboot hotkey=R\nmenu hotkey=Enter\npartition 1=protected recovery\ntargeted maintenance=yes\npartition creation=yes\nmissing OS=open automatically\nintegrity errors=open automatically\nscrollback=256 lines", FS_PROTECTED);
+            "name=TinyGPT Pre-OS Environment\nphase=before operating system\nboot hotkey=R\nmenu hotkey=Enter\npartition 1=protected recovery\ntargeted maintenance=yes\npartition creation=yes\nmissing OS=open automatically\nintegrity errors=open automatically\nscrollback=256 lines", FS_PROTECTED);
     }
     if (kernel >= 0) {
         fs_ensure_file((UINTN)kernel, "kernel.info",
             "critical=yes\nmodel=single-address-space\narchitecture=AArch64\nentry=EfiMain\nservices=shell,MiniFS2,apps", FS_PROTECTED);
         fs_ensure_file((UINTN)kernel, "abi.info",
-            "freestanding C17\nunix_abi=no\nposix=no\nsyscalls=native TinyArmOS services", FS_PROTECTED);
+            "freestanding C17\nunix_abi=no\nposix=no\nsyscalls=native TinyGPT services", FS_PROTECTED);
         fs_ensure_file((UINTN)kernel, "memory.map",
             "core=static image\nfilesystem=static checked nodes\napplications=UEFI pool\nboot_services=active", FS_PROTECTED);
     }
@@ -1544,7 +1515,7 @@ static int fs_restore_system(void) {
         fs_ensure_file((UINTN)config, "boot.cfg",
             "pre_os_environment=auto\npre_os_hotkey=R\nboot_menu_hotkey=Enter\npre_os_window=2s\npartition_default=BOOTORD.CFG\npartition_registry=PARTS.CFG\nsnapshots=2\nintegrity_scan=scan N\nwatchdog=disabled", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "shell.cfg",
-            "home=/home\napps=/apps\ntemporary=/tmp\nprompt=tinyarm\nsettings=/home/.tinyarmrc\nnavigation=go,open,up,back,home,root,cd", FS_PROTECTED);
+            "home=/home\napps=/apps\ntemporary=/tmp\nprompt=tinygpt\nsettings=/home/.tinygptrc\nnavigation=cd", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "protection.cfg",
             "protected=/system,/apps,/lost+found\ndefault=locked\nunlock=protect unlock\nscope=current-boot", FS_PROTECTED);
     }
@@ -1594,18 +1565,24 @@ static int fs_restore_system(void) {
             "Left/Right move by character\nUp/Down move through wrapped rows and scroll\nBackspace/Delete remove text\nEnter inserts a line\nF2 or Ctrl+S saves\nEsc exits; press twice to discard changes\nHome/End/PageUp/PageDown are unused", FS_PROTECTED);
     }
     if (shellApp >= 0) fs_ensure_file((UINTN)shellApp, "app.info",
-        "name=TinyArmOS Shell\nkind=built-in\nfilesystem=MiniFS2\ncommands=help,settings,textedit", FS_PROTECTED);
+        "name=TinyGPT Shell\nkind=built-in\nfilesystem=MiniFS2\ncommands=help,settings,textedit", FS_PROTECTED);
     if (home >= 0) {
         int homeReadme;
-        const char *oldReadme =
+        const char *legacyReadme =
             "Easy navigation: home, root, up, back, go system, go apps, dir, open PATH. Try: sysfiles or apps";
-        const char *newReadme =
+        const char *shortcutReadme =
             "Navigation: home, root, up, back, go system, go apps, ls, open PATH. Try: sysfiles or apps";
+        const char *newReadme =
+            "Navigation: cd /system, cd /apps, cd .., cd -, and ls. Inspect files with cat PATH.";
         fs_ensure_dir((UINTN)home, "notes", 0);
         homeReadme = fs_find_child((UINTN)home, "readme.txt");
         if (homeReadme < 0) fs_ensure_file((UINTN)home, "readme.txt", newReadme, 0);
-        else if (gNodes[homeReadme].type == FS_FILE && streq(gNodes[homeReadme].data, oldReadme))
+        else if (gNodes[homeReadme].type == FS_FILE &&
+                 (streq(gNodes[homeReadme].data, legacyReadme) ||
+                  streq(gNodes[homeReadme].data, shortcutReadme))) {
             fs_set_file((UINTN)homeReadme, newReadme);
+            migrated = 1;
+        }
     }
     return migrated;
 }
@@ -1823,24 +1800,14 @@ static void fs_tree(UINTN node) {
     if (gNodes[node].type == FS_DIRECTORY) fs_tree_node(node, 1);
 }
 
-static const char *fs_easy_path(const char *name) {
-    if (!name || !*name || streq(name, "home")) return "/home";
-    if (streq(name, "root")) return "/";
-    if (streq(name, "system")) return "/system";
-    if (streq(name, "apps")) return "/apps";
-    if (streq(name, "temp") || streq(name, "tmp")) return "/tmp";
-    if (streq(name, "up")) return "..";
-    return name;
-}
-
-static void fs_change_directory(const char *path, int previous, int showContents) {
+static void fs_change_directory(const char *path, int previous) {
     int node = previous ? (int)gPreviousCwd : fs_resolve(path);
     if (node < 0 || (UINTN)node >= FS_MAX_NODES || !gNodes[node].used) {
-        print("go: path not found\n");
+        print("cd: path not found\n");
         return;
     }
     if (gNodes[node].type != FS_DIRECTORY) {
-        print("go: not a directory\n");
+        print("cd: not a directory\n");
         return;
     }
     {
@@ -1848,7 +1815,6 @@ static void fs_change_directory(const char *path, int previous, int showContents
         gCwd = (UINTN)node;
         gPreviousCwd = old;
     }
-    if (showContents) fs_list(gCwd);
 }
 
 static int fs_check(int repair, int verbose) {
@@ -2025,6 +1991,7 @@ static void read_line(char *line, UINTN capacity) {
 
 static const char *settings_color_name(UINT8 color) {
     switch (color) {
+        case 0: return "black";
         case 1: return "blue";
         case 2: return "green";
         case 3: return "cyan";
@@ -2060,17 +2027,24 @@ static int settings_parse_uint8(const char *text, UINT8 *value) {
 static void settings_defaults(void) {
     gSettings.textColor = SETTINGS_DEFAULT_TEXT_COLOR;
     gSettings.accentColor = SETTINGS_DEFAULT_ACCENT_COLOR;
+    gSettings.backgroundColor = SETTINGS_DEFAULT_BACKGROUND_COLOR;
     gSettings.showPromptPath = 1;
     gSettings.startupHome = 0;
     gSettings.scrollback = 1;
 }
 
+static UINTN settings_text_attribute(UINT8 foreground, UINT8 background) {
+    return (UINTN)foreground | ((UINTN)background << 4);
+}
+
 static void settings_use_default_color(void) {
-    gST->ConOut->SetAttribute(gST->ConOut, (UINTN)gSettings.textColor);
+    gST->ConOut->SetAttribute(
+        gST->ConOut, settings_text_attribute(gSettings.textColor, gSettings.backgroundColor));
 }
 
 static void settings_use_accent_color(void) {
-    gST->ConOut->SetAttribute(gST->ConOut, (UINTN)gSettings.accentColor);
+    gST->ConOut->SetAttribute(
+        gST->ConOut, settings_text_attribute(gSettings.accentColor, gSettings.backgroundColor));
 }
 
 static void settings_parse_config_line(char *line) {
@@ -2084,6 +2058,8 @@ static void settings_parse_config_line(char *line) {
         if (parsed >= 1U && parsed <= 15U) gSettings.textColor = parsed;
     } else if (streq(line, "accent_color")) {
         if (parsed >= 1U && parsed <= 15U) gSettings.accentColor = parsed;
+    } else if (streq(line, "background_color")) {
+        if (parsed <= 7U) gSettings.backgroundColor = parsed;
     } else if (streq(line, "prompt_path")) {
         if (parsed <= 1U) gSettings.showPromptPath = parsed;
     } else if (streq(line, "startup_home")) {
@@ -2097,7 +2073,7 @@ static void settings_load(void) {
     int node;
     UINTN position = 0;
     settings_defaults();
-    node = fs_resolve("/home/.tinyarmrc");
+    node = fs_resolve("/home/.tinygptrc");
     if (node < 0 || gNodes[node].type != FS_FILE) return;
     while (position < gNodes[node].size) {
         char line[64];
@@ -2118,6 +2094,10 @@ static void settings_load(void) {
         line[used] = 0;
         if (!overflow && used) settings_parse_config_line(line);
     }
+    if (gSettings.backgroundColor == gSettings.textColor ||
+        gSettings.backgroundColor == gSettings.accentColor) {
+        gSettings.backgroundColor = SETTINGS_DEFAULT_BACKGROUND_COLOR;
+    }
 }
 
 static void settings_append_uint8(char *buffer, UINT8 value, UINTN capacity) {
@@ -2132,11 +2112,11 @@ static void settings_append_uint8(char *buffer, UINT8 value, UINTN capacity) {
 
 static int settings_save(void) {
     char data[192];
-    int node = fs_resolve("/home/.tinyarmrc");
+    int node = fs_resolve("/home/.tinygptrc");
     if (node < 0) {
         int home = fs_resolve("/home");
         if (home < 0) return 0;
-        node = fs_alloc(FS_FILE, (UINTN)home, ".tinyarmrc", 0);
+        node = fs_alloc(FS_FILE, (UINTN)home, ".tinygptrc", 0);
     }
     if (node < 0 || gNodes[node].type != FS_FILE) return 0;
     data[0] = 0;
@@ -2144,6 +2124,8 @@ static int settings_save(void) {
     settings_append_uint8(data, gSettings.textColor, sizeof(data));
     string_append(data, "\naccent_color=", sizeof(data));
     settings_append_uint8(data, gSettings.accentColor, sizeof(data));
+    string_append(data, "\nbackground_color=", sizeof(data));
+    settings_append_uint8(data, gSettings.backgroundColor, sizeof(data));
     string_append(data, "\nprompt_path=", sizeof(data));
     settings_append_uint8(data, gSettings.showPromptPath, sizeof(data));
     string_append(data, "\nstartup_home=", sizeof(data));
@@ -2170,16 +2152,16 @@ static void settings_print_toggle(UINT8 enabled) {
 
 static void settings_show(const char *notice) {
     settings_use_accent_color();
-    print("=== TinyArmOS Settings ===\n");
+    print("=== TinyGPT Settings ===\n");
     settings_use_default_color();
     print("Changes save automatically. Choose 0 when finished.\n\n");
     print("  1  Default text color : "); print(settings_color_name(gSettings.textColor)); print("\n");
     print("  2  Accent color       : "); print(settings_color_name(gSettings.accentColor)); print("\n");
-    print("     Used for prompts, directories, and protected labels.\n");
-    print("  3  Show path in prompt: "); settings_print_toggle(gSettings.showPromptPath); print("\n");
-    print("  4  Startup directory  : "); print(gSettings.startupHome ? "/home" : "/"); print("\n");
-    print("  5  Scrollback         : "); settings_print_toggle(gSettings.scrollback); print("\n");
-    print("  6  Restore defaults\n");
+    print("  3  Background color   : "); print(settings_color_name(gSettings.backgroundColor)); print("\n");
+    print("  4  Show path in prompt: "); settings_print_toggle(gSettings.showPromptPath); print("\n");
+    print("  5  Startup directory  : "); print(gSettings.startupHome ? "/home" : "/"); print("\n");
+    print("  6  Scrollback         : "); settings_print_toggle(gSettings.scrollback); print("\n");
+    print("  7  Restore defaults\n");
     print("  0  Return to shell\n");
     if (notice && *notice) {
         settings_use_accent_color();
@@ -2193,11 +2175,12 @@ static void settings_show(const char *notice) {
 static void settings_show_colors(UINT8 selected) {
     UINT8 color;
     settings_use_accent_color();
-    print("=== Choose a Color ===\n");
+    print("=== Choose a Text Color ===\n");
     settings_use_default_color();
-    print("Black is excluded because the console background is black.\n\n");
+    print("Black is unavailable as a foreground choice.\n\n");
     for (color = 1; color <= 15U; color++) {
-        gST->ConOut->SetAttribute(gST->ConOut, (UINTN)color);
+        gST->ConOut->SetAttribute(
+            gST->ConOut, settings_text_attribute(color, gSettings.backgroundColor));
         print(color == selected ? "  > " : "    ");
         print_u64(color);
         print("  ");
@@ -2218,12 +2201,50 @@ static int settings_choose_color(UINT8 *target) {
     if (!settings_parse_uint8(answer, &color)) return -1;
     if (!color) return 0;
     if (color > 15U) return -1;
+    if (color == gSettings.backgroundColor) return -2;
+    *target = color;
+    return 1;
+}
+
+static void settings_show_backgrounds(UINT8 selected) {
+    UINT8 color;
+    settings_use_accent_color();
+    print("=== Choose a Background Color ===\n");
+    settings_use_default_color();
+    print("Each row previews the available background.\n\n");
+    for (color = 0; color <= 7U; color++) {
+        UINT8 foreground = color == 7U ? 0U : 15U;
+        gST->ConOut->SetAttribute(
+            gST->ConOut, settings_text_attribute(foreground, color));
+        print(color == selected ? "  > " : "    ");
+        print_u64((UINT64)color + 1U);
+        print("  ");
+        print(settings_color_name(color));
+        print("\n");
+    }
+    settings_use_default_color();
+    print("\n  0  Cancel\n");
+}
+
+static int settings_choose_background(UINT8 *target) {
+    char answer[32];
+    UINT8 option;
+    UINT8 color;
+    gST->ConOut->ClearScreen(gST->ConOut);
+    settings_show_backgrounds(*target);
+    print("\nBackground number: ");
+    read_line(answer, sizeof(answer));
+    if (!settings_parse_uint8(answer, &option)) return -1;
+    if (!option) return 0;
+    if (option > 8U) return -1;
+    color = (UINT8)(option - 1U);
+    if (color == gSettings.textColor || color == gSettings.accentColor) return -2;
     *target = color;
     return 1;
 }
 
 static const char *settings_save_notice(void) {
-    return settings_save() ? "Saved automatically to /home/.tinyarmrc." :
+    return settings_save() ? "Saved automatically to /home/.tinygptrc." :
            "Applied for this boot; automatic save failed.";
 }
 
@@ -2248,23 +2269,28 @@ static void command_settings(void) {
         }
         if (streq(choice, "1")) changed = settings_choose_color(&gSettings.textColor);
         else if (streq(choice, "2")) changed = settings_choose_color(&gSettings.accentColor);
-        else if (streq(choice, "3")) {
+        else if (streq(choice, "3")) changed = settings_choose_background(&gSettings.backgroundColor);
+        else if (streq(choice, "4")) {
             gSettings.showPromptPath = (UINT8)!gSettings.showPromptPath;
             changed = 1;
-        } else if (streq(choice, "4")) {
+        } else if (streq(choice, "5")) {
             gSettings.startupHome = (UINT8)!gSettings.startupHome;
             changed = 1;
-        } else if (streq(choice, "5")) {
+        } else if (streq(choice, "6")) {
             gSettings.scrollback = (UINT8)!gSettings.scrollback;
             changed = 1;
-        } else if (streq(choice, "6")) {
+        } else if (streq(choice, "7")) {
             settings_defaults();
             changed = 1;
         } else {
-            notice = "Unknown selection; choose 0 through 6.";
+            notice = "Unknown selection; choose 0 through 7.";
             continue;
         }
-        if (changed > 0) notice = settings_save_notice();
+        if (changed > 0) {
+            settings_use_default_color();
+            notice = settings_save_notice();
+        } else if (changed == -2) notice = "Text and accent colors must differ from the background.";
+        else if (changed < 0 && streq(choice, "3")) notice = "Invalid background; choose 1 through 8.";
         else if (changed < 0) notice = "Invalid color; choose 1 through 15.";
         else notice = "Color change canceled.";
     }
@@ -2327,7 +2353,7 @@ static int pre_os_mount_target(UINTN partition, int verbose) {
         return 0;
     }
     if (!storage_mount_latest()) {
-        if (verbose) print("target: no valid TinyArmOS snapshot is installed\n");
+        if (verbose) print("target: no valid TinyGPT snapshot is installed\n");
         return 0;
     }
     return 1;
@@ -2336,7 +2362,7 @@ static int pre_os_mount_target(UINTN partition, int verbose) {
 static int pre_os_bootable(UINTN partition, int verbose) {
     if (!pre_os_mount_target(partition, verbose)) return 0;
     if (storage_os_missing()) {
-        if (verbose) print("boot: TinyArmOS is not installed on that partition\n");
+        if (verbose) print("boot: TinyGPT is not installed on that partition\n");
         return 0;
     }
     if (fs_scan_integrity(verbose)) {
@@ -2360,7 +2386,7 @@ static int pre_os_repair(UINTN partition) {
     if (!mounted) {
         fs_format();
         gGeneration = 0;
-        print("repair: installing TinyArmOS filesystem on empty partition\n");
+        print("repair: installing TinyGPT filesystem on empty partition\n");
     } else {
         fs_check(1, 1);
     }
@@ -2369,7 +2395,7 @@ static int pre_os_repair(UINTN partition) {
         return 0;
     }
     if (!storage_clear_os_missing()) {
-        print("repair: could not mark TinyArmOS as installed\n");
+        print("repair: could not mark TinyGPT as installed\n");
         return 0;
     }
     print("repair: target partition is bootable\n");
@@ -2484,10 +2510,10 @@ static int boot_screen(EFI_HANDLE imageHandle) {
         "                    /___/\n\n"
     );
     gST->ConOut->SetAttribute(gST->ConOut, 0x07);
-    print("  TinyArmOS " TINYARMOS_DISPLAY_VERSION " firmware startup\n\n");
+    print("  TinyGPT " TINYGPT_DISPLAY_VERSION " firmware startup\n\n");
     boot_stage(1, "ARM64 UEFI firmware and timer", 1);
     gStorageReady = (UINT8)storage_init(imageHandle);
-    boot_stage(2, "TinyArmOS boot volume", gStorageReady);
+    boot_stage(2, "TinyGPT boot volume", gStorageReady);
     if (gStorageReady) targetPartition = pre_os_boot_prompt();
     if (targetPartition == 1U) return 1;
     if (gStorageReady && storage_activate_partition(targetPartition)) {
@@ -2506,11 +2532,11 @@ static int boot_screen(EFI_HANDLE imageHandle) {
             }
         }
     }
-    boot_stage(3, "TinyArmOS system snapshot", mounted);
+    boot_stage(3, "TinyGPT system snapshot", mounted);
     if (mounted) errors = fs_scan_integrity(0);
     boot_stage(4, "system integrity and checksums", mounted && errors == 0);
     if (mounted && errors == 0 && fs_restore_system()) fs_commit();
-    boot_stage(5, "TinyArmOS operating system", !osMissing && mounted && errors == 0);
+    boot_stage(5, "TinyGPT operating system", !osMissing && mounted && errors == 0);
     if (osMissing) {
         print("\n  OS MISSING - OPENING PRE-OS ENVIRONMENT\n");
         delay_ms(150);
@@ -2535,7 +2561,7 @@ static void pre_os_help(void) {
         "  order            show the default boot partition\n"
         "  order N          set a numbered partition as the default\n"
         "  scan N           verify a partition and both snapshots\n"
-        "  repair N         repair or install TinyArmOS on a partition\n"
+        "  repair N         repair or install TinyGPT on a partition\n"
         "  rollback N       load that partition's previous snapshot\n"
         "  pwd              print the current directory\n"
         "  ls [PATH]        list a directory or file\n"
@@ -2547,7 +2573,7 @@ static void pre_os_help(void) {
         "  scroll           show scrollback status and keyboard controls\n"
         "  scroll clear     erase retained scrollback\n"
         "  boot [N]         verify and start the selected partition\n"
-        "  reboot           restart TinyArmOS\n"
+        "  reboot           restart TinyGPT\n"
         "  shutdown         power off the machine\n"
     );
 }
@@ -2557,9 +2583,9 @@ static void pre_os_environment(void) {
     if (!gScrollbackEnabled) scrollback_enable();
     gST->ConOut->ClearScreen(gST->ConOut);
     settings_use_accent_color();
-    print("=== TinyArmOS Pre-OS Environment ===\n");
+    print("=== TinyGPT Pre-OS Environment ===\n");
     settings_use_default_color();
-    print("TinyArmOS has not started. Firmware recovery tools are active.\n");
+    print("TinyGPT has not started. Firmware recovery tools are active.\n");
     print(storage_os_missing() ? "Status: operating system missing or storage unavailable.\n" :
           "Status: operating system present; use 'boot' to start it.\n");
     print("Two checksummed snapshots protect the persistent filesystem.\n");
@@ -2589,7 +2615,7 @@ static void pre_os_environment(void) {
             } else {
                 print("Created partition "); print_u64(created); print(" named ");
                 print(gPartitionNames[created - 1U]);
-                print(". Reboot once; TinyArmOS will initialize it automatically.\n");
+                print(". Reboot once; TinyGPT will initialize it automatically.\n");
             }
         } else if (starts_with(line, "partition name ")) {
             char *arguments = skip_spaces(line + 15);
@@ -2632,7 +2658,7 @@ static void pre_os_environment(void) {
             if (!pre_os_parse_partition(skip_spaces(line + 5), &partition))
                 print("scan: provide a non-protected partition number\n");
             else if (pre_os_mount_target(partition, 1)) {
-                print("TinyArmOS installation: present on partition "); print_u64(partition); print("\n");
+                print("TinyGPT installation: present on partition "); print_u64(partition); print("\n");
                 fs_scan_integrity(1);
             }
         } else if (streq(line, "scan")) {
@@ -2757,38 +2783,25 @@ static void command_help(void) {
         "  echo [TEXT]          print text or a blank line\n"
         "  info                 show OS, firmware, storage, and runtime details\n"
         "  uptime               show seconds since boot\n"
-        "  count                show commands entered this boot\n"
         "Navigation and discovery:\n"
         "  partitions           view disk partitions (manage them in pre-OS)\n"
         "  pwd                  print the current directory\n"
         "  ls [PATH]            list a directory or file\n"
         "  tree [PATH]          show a directory tree\n"
-        "  sysfiles             show critical /system and /apps files\n"
-        "  apps                 list installed applications\n"
-        "  home                 change to /home\n"
-        "  root                 change to /\n"
-        "  up                   change to the parent directory\n"
-        "  back                 return to the previous directory\n"
-        "  go [PLACE|PATH]      open home, root, system, apps, or tmp\n"
         "  cd [PATH|-]          change directory; no path opens /home\n"
-        "  open [PATH]          list a directory or print a file\n"
         "Filesystem commands:\n"
         "  cat PATH             print a file\n"
-        "  write PATH TEXT      create or replace a file\n"
+        "  write PATH [TEXT]    create or replace a file; omit TEXT for an empty file\n"
         "  append PATH TEXT     append text to a file\n"
-        "  touch PATH           create an empty file\n"
         "  mkdir PATH           create a directory\n"
         "  rm PATH              remove a file\n"
         "  rm -rf PATH          recursively remove a directory tree\n"
-        "                      exact / destroys TinyArmOS and powers off\n"
         "  rmdir PATH           remove an empty directory\n"
         "  cp SOURCE DEST       copy a file\n"
         "  mv SOURCE DEST       move or rename a node\n"
         "  stat PATH            show file or directory metadata\n"
         "  df                   show MiniFS node and byte usage\n"
-        "  sync                 save a persistent filesystem snapshot\n"
         "  fsck                 verify filesystem structure and checksums\n"
-        "  fault PATH           diagnostic: corrupt a file checksum in RAM\n"
         "Application and system commands:\n"
         "  textedit [PATH]      text editor; omit PATH for the interactive file picker\n"
         "  doom                 launch Freedoom; Q or F12 returns to the shell\n"
@@ -2796,7 +2809,7 @@ static void command_help(void) {
         "  protect [status|unlock|lock] manage protected-node writes\n"
         "  update [check] [main|nightly]\n"
         "                       select and check/install an update channel\n"
-        "  reboot               save MiniFS and restart TinyArmOS\n"
+        "  reboot               save MiniFS and restart TinyGPT\n"
         "  shutdown             save MiniFS and power off the machine\n"
         "Keyboard: Up/Down scroll lines; PageUp/PageDown scroll pages;\n"
         "          Home shows oldest output; End/Esc returns to live output.\n"
@@ -2804,7 +2817,7 @@ static void command_help(void) {
 }
 
 static void command_info(void) {
-    print("TinyArmOS " TINYARMOS_DISPLAY_VERSION "\n");
+    print("TinyGPT " TINYGPT_DISPLAY_VERSION "\n");
     print("Architecture : ARM64 / AArch64\n");
     print("Boot method  : UEFI (BOOTAA64.EFI)\n");
     print("Filesystem   : MiniFS2, 96 hierarchical nodes, 2 snapshots\n");
@@ -2826,7 +2839,6 @@ static void command_info(void) {
 
 static void run_command(char *line) {
     char *command = skip_spaces(line);
-    gCommands++;
     if (!*command) return;
     if (streq(command, "help")) {
         command_help();
@@ -2850,11 +2862,8 @@ static void run_command(char *line) {
         UINT64 elapsed = timer_count() - gStartTicks;
         print_u64(gTimerHz ? elapsed / gTimerHz : 0);
         print(" seconds\n");
-    } else if (streq(command, "count")) {
-        print_u64(gCommands);
-        print(" commands entered this boot\n");
     } else if (streq(command, "partitions")) {
-        print("Disk partitions (read-only from TinyArmOS):\n");
+        print("Disk partitions (read-only from TinyGPT):\n");
         pre_os_print_partitions(gActivePartition);
         print("Reboot and press R to enter the pre-OS recovery environment to manage partitions.\n");
     } else if (streq(command, "pwd")) {
@@ -2872,37 +2881,11 @@ static void run_command(char *line) {
         int node = fs_resolve(path);
         if (node < 0) print("tree: path not found\n");
         else fs_tree((UINTN)node);
-    } else if (streq(command, "sysfiles")) {
-        int systemNode = fs_resolve("/system");
-        int appsNode = fs_resolve("/apps");
-        print("Critical OS files [");
-        print(gProtectionUnlocked ? "UNLOCKED" : "LOCKED");
-        print("]:\n");
-        if (systemNode >= 0) fs_tree((UINTN)systemNode);
-        if (appsNode >= 0) fs_tree((UINTN)appsNode);
-        print("Use 'open /system/manifest.txt' for descriptions.\n");
-    } else if (streq(command, "apps")) {
-        int node = fs_resolve("/apps");
-        print("Installed applications:\n");
-        if (node >= 0) fs_list((UINTN)node);
-        print("Use 'go apps' for metadata, 'textedit' for text, or 'doom' for Freedoom.\n");
-    } else if (streq(command, "home") || streq(command, "root") || streq(command, "up") || streq(command, "back")) {
-        fs_change_directory(fs_easy_path(command), streq(command, "back"), 0);
-    } else if (streq(command, "go") || starts_with(command, "go ")) {
-        char *target = streq(command, "go") ? (char *)"home" : skip_spaces(command + 3);
-        fs_change_directory(fs_easy_path(target), streq(target, "back") || streq(target, "-"), 0);
     } else if (streq(command, "cd")) {
-        fs_change_directory("/home", 0, 0);
+        fs_change_directory("/home", 0);
     } else if (starts_with(command, "cd ")) {
         char *path = skip_spaces(command + 3);
-        fs_change_directory(path, streq(path, "-"), 0);
-    } else if (streq(command, "open") || starts_with(command, "open ")) {
-        char *path = streq(command, "open") ? (char *)"" : skip_spaces(command + 5);
-        int node = *path ? fs_resolve(fs_easy_path(path)) : (int)gCwd;
-        if (node < 0) print("open: path not found\n");
-        else if (gNodes[node].type == FS_DIRECTORY && !*path) fs_list((UINTN)node);
-        else if (gNodes[node].type == FS_DIRECTORY) fs_change_directory(fs_easy_path(path), 0, 1);
-        else { print(gNodes[node].data); print("\n"); }
+        fs_change_directory(path, streq(path, "-"));
     } else if (starts_with(command, "cat ")) {
         int node = fs_resolve(skip_spaces(command + 4));
         if (node < 0) print("cat: file not found\n");
@@ -2916,7 +2899,7 @@ static void run_command(char *line) {
         char *data;
         char *path = next_argument(command + (append ? 7 : 6), &data);
         int node = path ? fs_resolve(path) : -1;
-        if (!path) print("write: expected PATH TEXT\n");
+        if (!path) print("write: expected PATH [TEXT]\n");
         else {
             if (node < 0) {
                 UINTN parent;
@@ -2950,16 +2933,15 @@ static void run_command(char *line) {
                 print(" bytes\n");
             }
         }
-    } else if (starts_with(command, "touch ") || starts_with(command, "mkdir ")) {
-        int directory = starts_with(command, "mkdir ");
-        char *path = skip_spaces(command + (directory ? 6 : 6));
+    } else if (starts_with(command, "mkdir ")) {
+        char *path = skip_spaces(command + 6);
         UINTN parent;
         char name[FS_NAME_BYTES];
         int existing = fs_resolve(path);
-        if (existing >= 0) print(directory && gNodes[existing].type != FS_DIRECTORY ? "mkdir: file exists\n" : "already exists\n");
-        else if (!fs_resolve_parent(path, &parent, name)) print("create: invalid path\n");
-        else if (fs_is_protected(parent) && !gProtectionUnlocked) print("create: protected system path (use 'protect unlock')\n");
-        else if (fs_alloc(directory ? FS_DIRECTORY : FS_FILE, parent, name, 0) < 0) print("create: filesystem full\n");
+        if (existing >= 0) print(gNodes[existing].type != FS_DIRECTORY ? "mkdir: file exists\n" : "already exists\n");
+        else if (!fs_resolve_parent(path, &parent, name)) print("mkdir: invalid path\n");
+        else if (fs_is_protected(parent) && !gProtectionUnlocked) print("mkdir: protected system path (use 'protect unlock')\n");
+        else if (fs_alloc(FS_DIRECTORY, parent, name, 0) < 0) print("mkdir: filesystem full\n");
         else fs_commit();
     } else if (starts_with(command, "rm ") || starts_with(command, "rmdir ")) {
         int recursive = starts_with(command, "rm -rf ");
@@ -2976,10 +2958,9 @@ static void run_command(char *line) {
             int complete;
             EFI_FILE_PROTOCOL *volume;
             if (!gVolumeRoot) {
-                print("rm -rf /: EFI storage is unavailable; TinyArmOS was not erased\n");
+                print("rm -rf /: EFI storage is unavailable; TinyGPT was not erased\n");
                 return;
             }
-            print("rm -rf /: destroying TinyArmOS now\n");
             gCwd = FS_ROOT;
             gPreviousCwd = FS_ROOT;
             fs_remove_recursive(FS_ROOT);
@@ -3005,7 +2986,7 @@ static void run_command(char *line) {
             gDedicatedStorage = 0;
             volume->Flush(volume);
             volume->Close(volume);
-            print("TinyArmOS files, snapshots, updater backups, and Freedoom data are gone.\n");
+            print("TinyGPT files, snapshots, updater backups, and Freedoom data are gone.\n");
             print("The pre-OS environment remains and will open at the next boot. Powering off.\n");
             delay_ms(2000);
             gST->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, (void *)0);
@@ -3099,22 +3080,13 @@ static void run_command(char *line) {
         }
         print_u64(nodes); print("/"); print_u64(FS_MAX_NODES); print(" nodes, ");
         print_u64(bytes); print("/"); print_u64((FS_MAX_NODES - 1) * (FS_DATA_BYTES - 1)); print(" data bytes\n");
-    } else if (streq(command, "sync")) {
-        print(storage_sync() ? "snapshot saved\n" : "sync unavailable or failed\n");
     } else if (streq(command, "fsck")) {
         fs_check(0, 1);
-    } else if (starts_with(command, "fault ")) {
-        int node = fs_resolve(skip_spaces(command + 6));
-        if (node < 0 || gNodes[node].type != FS_FILE) print("fault: file not found\n");
-        else {
-            gNodes[node].checksum ^= 0x13579bdfU;
-            print("test fault injected; reboot and press R for pre-OS repair\n");
-        }
     } else if (streq(command, "textedit") || starts_with(command, "textedit ")) {
         command_textedit(command);
     } else if (streq(command, "doom")) {
         print("Freedoom controls: WASD move, arrows turn, F fire, E use, Enter select, Esc menu.\n");
-        print("Press Q (or F12) at any time to return to TinyArmOS. Starting...\n");
+        print("Press Q (or F12) at any time to return to TinyGPT. Starting...\n");
         delay_ms(500);
         doom_run();
         settings_use_default_color();
@@ -3156,7 +3128,6 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     if (gST->BootServices->SetWatchdogTimer) gST->BootServices->SetWatchdogTimer(0, 0, 0, (CHAR16 *)0);
     gTimerHz = timer_frequency();
     gStartTicks = timer_count();
-    gCommands = 0;
     gGeneration = 0;
     gProtectionUnlocked = 0;
     gScrollbackEnabled = 0;
@@ -3167,8 +3138,6 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     preOsRequested = boot_screen(image);
     if (preOsRequested) pre_os_environment();
     settings_load();
-    settings_apply_runtime();
-    settings_use_default_color();
     startupNode = fs_resolve(gSettings.startupHome ? "/home" : "/");
     if (startupNode >= 0 && gNodes[startupNode].type == FS_DIRECTORY) {
         gCwd = (UINTN)startupNode;
@@ -3178,14 +3147,14 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     settings_apply_runtime();
     gST->ConOut->ClearScreen(gST->ConOut);
     settings_use_accent_color();
-    print("TinyArmOS " TINYARMOS_DISPLAY_VERSION);
+    print("TinyGPT " TINYGPT_DISPLAY_VERSION);
     settings_use_default_color();
     print(" - ARM64 shell + MiniFS2\n");
     print("Pre-OS recovery: press R during firmware startup.\n\n");
     for (;;) {
         fs_path(gCwd, path, sizeof(path));
         settings_use_accent_color();
-        print("tinyarm");
+        print("tinygpt");
         settings_use_default_color();
         if (gSettings.showPromptPath) {
             print(":");

@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -35,7 +37,7 @@ jobs:
       - name: Test host update command
         run: |
           python -m unittest discover -s tests -v
-          python tinyarmos --help
+          python tinygpt --help
 
       - name: Build
         run: make
@@ -45,35 +47,34 @@ jobs:
         run: |
           set -euo pipefail
           test -s build/BOOTAA64.EFI
-          test "$(stat -c '%s' build/TinyArmOS.img)" -eq 134217728
-          test ! -e build/TinyArmOS.utm
-          test ! -e build/TinyArmOS-UTM.img
+          test "$(stat -c '%s' build/TinyGPT.img)" -eq 134217728
+          test ! -e build/TinyGPT.utm
+          test ! -e build/TinyGPT-UTM.img
           file build/BOOTAA64.EFI | grep -Eq 'PE32\+ executable.*Aarch64'
           strings build/BOOTAA64.EFI | grep -Fq 'update [check] [main|nightly]'
           strings build/BOOTAA64.EFI | grep -Fq 'Checking the '
-          strings build/BOOTAA64.EFI | grep -Fq 'nightly/TinyArmOS-update.txt'
+          strings build/BOOTAA64.EFI | grep -Fq 'nightly/TinyGPT-update.txt'
           strings build/BOOTAA64.EFI | grep -Fq 'UTM Shared Network fallback configured; continuing automatically.'
           strings build/BOOTAA64.EFI | grep -Fq 'Network fallback is still initializing; retrying automatically...'
-          strings build/BOOTAA64.EFI | grep -Fq '=== TinyArmOS Settings ==='
+          strings build/BOOTAA64.EFI | grep -Fq '=== TinyGPT Settings ==='
           strings build/BOOTAA64.EFI | grep -Fq 'settings             open the full-screen persistent settings UI'
-          strings build/BOOTAA64.EFI | grep -Fq 'rm -rf /: destroying TinyArmOS now'
           strings build/BOOTAA64.EFI | grep -Fq 'The pre-OS environment remains and will open at the next boot.'
-          strings build/BOOTAA64.EFI | grep -Fq '=== TinyArmOS Pre-OS Environment ==='
+          strings build/BOOTAA64.EFI | grep -Fq '=== TinyGPT Pre-OS Environment ==='
           strings build/BOOTAA64.EFI | grep -Fq 'Up/Down select, Enter boot, S save default, R recovery'
           strings build/BOOTAA64.EFI | grep -Fq 'partition add MIB NAME'
-          strings build/BOOTAA64.EFI | grep -Fq 'repair N         repair or install TinyArmOS'
+          strings build/BOOTAA64.EFI | grep -Fq 'repair N         repair or install TinyGPT'
           ! strings build/BOOTAA64.EFI | grep -Fq 'bootmgr              open'
           ! strings build/BOOTAA64.EFI | grep -Fq 'Recovery Agent'
           ! strings build/BOOTAA64.EFI | grep -Fq 'command: recovery'
           strings build/BOOTAA64.EFI | grep -Fq 'scan N           verify a partition'
           strings build/BOOTAA64.EFI | grep -Fq 'scan: active file integrity verified'
-          strings build/BOOTAA64.EFI | grep -Fq 'The running shell remains TinyArmOS'
+          strings build/BOOTAA64.EFI | grep -Fq 'The running shell remains TinyGPT'
           python - <<'PY'
           import runpy
           from pathlib import Path
 
-          updater = runpy.run_path("tinyarmos", run_name="ci_validation")
-          image = Path("build/TinyArmOS.img").read_bytes()
+          updater = runpy.run_path("tinygpt", run_name="ci_validation")
+          image = Path("build/TinyGPT.img").read_bytes()
           assert image[512:520] == b"EFI PART"
           recovery = updater["Fat32Image"](image, 0)
           system = updater["Fat32Image"](image, 1)
@@ -82,6 +83,6 @@ jobs:
           efi = recovery.read_file(updater["BOOT_PATH"])
           updater["validate_efi"](efi)
           assert updater["embedded_channel"](efi) == "main"
-          assert system.read_file((b"TINYOS  NEW",)) == b"Initialize TinyArmOS on first boot\n"
+          assert system.read_file((b"TINYGPT NEW",)) == b"Initialize TinyGPT on first boot\n"
           assert system.read_file((b"DOOMU   WAD",)).startswith(b"IWAD")
           PY

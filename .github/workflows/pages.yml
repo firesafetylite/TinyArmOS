@@ -7,11 +7,10 @@ on:
         description: Release tag to publish (defaults to latest)
         required: false
         type: string
-  workflow_run:
-    workflows:
-      - Release
+  repository_dispatch:
     types:
-      - completed
+      - release-published
+      - nightly-published
 
 permissions:
   contents: read
@@ -24,7 +23,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -33,6 +32,9 @@ jobs:
     steps:
       - name: Check out channel publisher
         uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
 
       - name: Download and verify main and nightly assets
         env:
@@ -51,13 +53,13 @@ jobs:
           fi
           mkdir -p release-main release-nightly
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'TinyArmOS-update.txt' \
-            --pattern 'TinyArmOS-v*-BOOTAA64.EFI' \
+            --pattern 'TinyGPT-update.txt' \
+            --pattern 'TinyGPT-v*-BOOTAA64.EFI' \
             --dir release-main
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release download nightly --repo "$GITHUB_REPOSITORY" \
-              --pattern 'TinyArmOS-nightly-update.txt' \
-              --pattern 'TinyArmOS-nightly-BOOTAA64.EFI' \
+              --pattern 'TinyGPT-nightly-update.txt' \
+              --pattern 'TinyGPT-nightly-BOOTAA64.EFI' \
               --dir release-nightly
           fi
           python3 tools/make_update_site.py \
