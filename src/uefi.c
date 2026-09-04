@@ -1492,6 +1492,7 @@ static int fs_restore_system(void) {
     int firmware = -1;
     int security = -1;
     int doomApp = -1;
+    int editorApp = -1;
     int shellApp = -1;
     fs_ensure_dir(FS_ROOT, "tmp", 0);
     fs_ensure_dir(FS_ROOT, "lost+found", FS_PROTECTED);
@@ -1564,10 +1565,14 @@ static int fs_restore_system(void) {
             "/system\n/apps\n/lost+found\nUnlock requires exact UNLOCK confirmation and expires at reboot.", FS_PROTECTED);
     }
     if (apps >= 0) {
+        int previousEditor = fs_find_child((UINTN)apps, "editor");
+        if (previousEditor < 0 || gNodes[previousEditor].type != FS_DIRECTORY ||
+            fs_find_child((UINTN)previousEditor, "app.info") < 0) migrated = 1;
         doomApp = fs_ensure_dir((UINTN)apps, "doom", FS_PROTECTED);
+        editorApp = fs_ensure_dir((UINTN)apps, "editor", FS_PROTECTED);
         shellApp = fs_ensure_dir((UINTN)apps, "shell", FS_PROTECTED);
         fs_ensure_file((UINTN)apps, "registry.txt",
-            "doom      command: doom\nshell     built-in interactive shell", FS_PROTECTED);
+            "doom      command: doom\neditor    command: edit [PATH]\nshell     built-in interactive shell", FS_PROTECTED);
     }
     if (doomApp >= 0) {
         fs_ensure_file((UINTN)doomApp, "app.info",
@@ -1579,8 +1584,14 @@ static int fs_restore_system(void) {
         fs_ensure_file((UINTN)doomApp, "license.info",
             "PureDOOM engine=GPL-2.0\nFreedoom assets=BSD-3-Clause\nSee source distribution licenses.", FS_PROTECTED);
     }
+    if (editorApp >= 0) {
+        fs_ensure_file((UINTN)editorApp, "app.info",
+            "name=TinyArmOS Text Editor\nkind=native full-screen app\ncommand=edit [PATH]\nformat=ASCII text\nfile_limit=8191 bytes\nprotected_paths=require protect unlock", FS_PROTECTED);
+        fs_ensure_file((UINTN)editorApp, "controls.txt",
+            "Arrows move cursor\nHome/End move within line\nPageUp/PageDown move one screen\nBackspace/Delete remove text\nEnter inserts a line\nF2 or Ctrl+S saves\nEsc exits; press twice to discard changes", FS_PROTECTED);
+    }
     if (shellApp >= 0) fs_ensure_file((UINTN)shellApp, "app.info",
-        "name=TinyArmOS Shell\nkind=built-in\nfilesystem=MiniFS2\ncommands=help,settings", FS_PROTECTED);
+        "name=TinyArmOS Shell\nkind=built-in\nfilesystem=MiniFS2\ncommands=help,settings,edit", FS_PROTECTED);
     if (home >= 0) {
         int homeReadme;
         const char *oldReadme =
@@ -2256,6 +2267,8 @@ static void command_settings(void) {
     }
 }
 
+#include "editor.inc"
+
 static void command_protect(const char *command) {
     if (streq(command, "protect") || streq(command, "protect status")) {
         print(gProtectionUnlocked ? "protected nodes are UNLOCKED until reboot\n" :
@@ -2774,6 +2787,7 @@ static void command_help(void) {
         "  fsck                 verify filesystem structure and checksums\n"
         "  fault PATH           diagnostic: corrupt a file checksum in RAM\n"
         "Application and system commands:\n"
+        "  edit [PATH]          edit a text file; omit PATH for an interactive prompt\n"
         "  doom                 launch Freedoom; Q or F12 returns to the shell\n"
         "  settings             open the full-screen persistent settings UI\n"
         "  protect [status|unlock|lock] manage protected-node writes\n"
@@ -2868,7 +2882,7 @@ static void run_command(char *line) {
         int node = fs_resolve("/apps");
         print("Installed applications:\n");
         if (node >= 0) fs_list((UINTN)node);
-        print("Use 'go apps' to browse metadata or 'doom' to launch Freedoom.\n");
+        print("Use 'go apps' for metadata, 'edit PATH' for text, or 'doom' for Freedoom.\n");
     } else if (streq(command, "home") || streq(command, "root") || streq(command, "up") || streq(command, "back")) {
         fs_change_directory(fs_easy_path(command), streq(command, "back"), 0);
     } else if (streq(command, "go") || starts_with(command, "go ")) {
@@ -3093,6 +3107,8 @@ static void run_command(char *line) {
             gNodes[node].checksum ^= 0x13579bdfU;
             print("test fault injected; reboot and press R for pre-OS repair\n");
         }
+    } else if (streq(command, "edit") || starts_with(command, "edit ")) {
+        command_editor(command);
     } else if (streq(command, "doom")) {
         print("Freedoom controls: WASD move, arrows turn, F fire, E use, Enter select, Esc menu.\n");
         print("Press Q (or F12) at any time to return to TinyArmOS. Starting...\n");

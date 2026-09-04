@@ -6,6 +6,8 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 
 ### Added
 
+- A native full-screen `edit [PATH]` application for viewing, creating, and editing MiniFS2 ASCII text with cursor navigation, guarded saves, and unsaved-change protection.
+- `/apps/editor` metadata and controls in the protected application registry.
 - A read-only `partitions` command in the regular shell that lists canonical partition numbers and directs all management to pre-OS recovery.
 
 ### Changed

@@ -92,6 +92,7 @@ MiniFS2 provides:
 - Persistent storage across reboots
 - Absolute, relative, `~`, `cd`, and `cd -` navigation
 - Friendly `go`, `open`, `home`, `root`, `up`, and `back` navigation
+- Native full-screen editor for viewing, creating, and editing ASCII text files
 - 256-line shell scrollback with arrow-key and PageUp/PageDown navigation
 - Nested directories and directory-aware `cp`/`mv`
 - 96 fixed nodes with up to 8191 data bytes per file
@@ -127,6 +128,7 @@ df
 sync
 fsck
 fault PATH
+edit [PATH]
 ```
 
 `rm -rf` recursively removes files and directories and refuses an in-use working-directory tree. Exact `rm -rf /` is protected: first run `protect unlock` and type `UNLOCK`. It then empties the entire currently booted system/data partition—including snapshots, user files, settings, Freedoom, and every other entry—and powers off.
@@ -156,6 +158,7 @@ Run `sysfiles` to inspect both protected trees, or use `go system` and `go apps`
 /system/runtime    MiniFS2, mounts, and snapshots
 /system/security   integrity policy and protected paths
 /apps/doom         Freedoom app, controls, data link, and license
+/apps/editor       full-screen text editor metadata and controls
 /apps/shell        native shell app metadata
 ```
 
@@ -171,6 +174,20 @@ protect lock
 ```
 
 The unlock applies only to the current boot. Creation, writing, copying, moving, renaming, `rm`, and ordinary `rm -rf PATH` operations enforce protection through ancestor directories, including `/apps`. Exact `rm -rf /` also requires this temporary unlock before it can wipe the system partition.
+
+## Text Editor
+
+The native Text Editor can open an existing MiniFS2 text file or create a new one:
+
+```text
+edit /home/notes/todo.txt
+edit                         prompt for a path
+edit /apps/doom/app.info     view protected app metadata read-only
+```
+
+Use the arrow keys to move, Home/End within a line, PageUp/PageDown by one screen, Backspace/Delete to remove text, and Enter to insert a line. Press **F2** or **Ctrl+S** to save a persistent MiniFS snapshot. Press **Esc** to exit; if there are unsaved changes, press it a second time to confirm discarding them. Files are limited to 8191 bytes of ASCII text.
+
+Files under `/system`, `/apps`, and `/lost+found` open read-only while protection is locked. To intentionally edit one, leave the editor, run `protect unlock`, confirm `UNLOCK`, and reopen it. Ordinary files under `/home` remain directly editable.
 
 ## Freedoom
 
@@ -237,6 +254,7 @@ info
 uptime
 count
 partitions
+edit [PATH]
 settings
 protect [status|unlock|lock]
 update [check] [main|nightly]

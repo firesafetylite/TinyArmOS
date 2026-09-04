@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / "src" / "uefi.c").read_text(encoding="utf-8")
 UPDATE_SOURCE = (ROOT / "src" / "update.inc").read_text(encoding="utf-8")
 PARTITION_SOURCE = (ROOT / "src" / "partition.inc").read_text(encoding="utf-8")
+EDITOR_SOURCE = (ROOT / "src" / "editor.inc").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 BUILD_SCRIPT = (ROOT / "build.sh").read_text(encoding="utf-8")
 IMAGE_SOURCE = (ROOT / "tools" / "make_image.py").read_text(encoding="utf-8")
@@ -71,6 +72,7 @@ class ShellSourceTests(unittest.TestCase):
             "sync",
             "fsck",
             "fault PATH",
+            "edit [PATH]",
             "doom",
             "settings",
             "protect [status|unlock|lock]",
@@ -392,6 +394,29 @@ class ShellSourceTests(unittest.TestCase):
             self.assertIn("settings_use_accent_color();", view)
             self.assertIn("settings_use_default_color();", view)
         self.assertIn('print("  [system]");', listing)
+
+    def test_text_editor_is_a_protected_aware_full_screen_app(self) -> None:
+        restore = source_block("static int fs_restore_system(void)", "static void fs_format(void)")
+        dispatch = source_block("static void run_command(char *line)", "__attribute__((used))")
+        self.assertIn('#include "editor.inc"', SOURCE)
+        self.assertIn('fs_ensure_dir((UINTN)apps, "editor", FS_PROTECTED)', restore)
+        self.assertIn("editor    command: edit [PATH]", restore)
+        self.assertIn("TinyArmOS Text Editor", restore)
+        self.assertIn('streq(command, "edit")', dispatch)
+        self.assertIn("command_editor(command)", dispatch)
+        self.assertIn("static char gEditorBuffer[FS_DATA_BYTES]", EDITOR_SOURCE)
+        self.assertIn("fs_is_protected", EDITOR_SOURCE)
+        self.assertIn("!gProtectionUnlocked", EDITOR_SOURCE)
+        self.assertIn("F2/Ctrl+S Save", EDITOR_SOURCE)
+        self.assertIn("Unsaved changes", EDITOR_SOURCE)
+        self.assertIn("editor_save", EDITOR_SOURCE)
+        self.assertIn("fs_commit()", EDITOR_SOURCE)
+        self.assertIn("gEditorSaveBackup", EDITOR_SOURCE)
+        self.assertIn("gGeneration = previousGeneration", EDITOR_SOURCE)
+        self.assertIn("*node = -1", EDITOR_SOURCE)
+        self.assertIn("original file restored", EDITOR_SOURCE)
+        self.assertIn("EDITOR_SCAN_DELETE", EDITOR_SOURCE)
+        self.assertIn("EDITOR_SCAN_PAGE_DOWN", EDITOR_SOURCE)
 
     def test_settings_is_full_screen_and_auto_saves(self) -> None:
         settings_ui = source_block(
