@@ -72,7 +72,7 @@ class ShellSourceTests(unittest.TestCase):
             "sync",
             "fsck",
             "fault PATH",
-            "edit [PATH]",
+            "textedit [PATH]",
             "doom",
             "settings",
             "protect [status|unlock|lock]",
@@ -267,6 +267,7 @@ class ShellSourceTests(unittest.TestCase):
             "system",
             "view",
             "rename",
+            "edit",
             "freedoom",
             "run doom",
             "poweroff",
@@ -400,10 +401,13 @@ class ShellSourceTests(unittest.TestCase):
         dispatch = source_block("static void run_command(char *line)", "__attribute__((used))")
         self.assertIn('#include "editor.inc"', SOURCE)
         self.assertIn('fs_ensure_dir((UINTN)apps, "editor", FS_PROTECTED)', restore)
-        self.assertIn("editor    command: edit [PATH]", restore)
+        self.assertIn("editor    command: textedit [PATH]", restore)
         self.assertIn("TinyArmOS Text Editor", restore)
-        self.assertIn('streq(command, "edit")', dispatch)
-        self.assertIn("command_editor(command)", dispatch)
+        self.assertIn("!streq(gNodes[previousEditorInfo].data, editorAppInfo)", restore)
+        self.assertIn('streq(command, "textedit")', dispatch)
+        self.assertIn("command_textedit(command)", dispatch)
+        self.assertNotIn('streq(command, "edit")', dispatch)
+        self.assertNotIn('starts_with(command, "edit ")', dispatch)
         self.assertIn("static char gEditorBuffer[FS_DATA_BYTES]", EDITOR_SOURCE)
         self.assertIn("fs_is_protected", EDITOR_SOURCE)
         self.assertIn("!gProtectionUnlocked", EDITOR_SOURCE)
@@ -417,6 +421,29 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("original file restored", EDITOR_SOURCE)
         self.assertIn("EDITOR_SCAN_DELETE", EDITOR_SOURCE)
         self.assertIn("EDITOR_SCAN_PAGE_DOWN", EDITOR_SOURCE)
+        self.assertIn("static int editor_file_picker", EDITOR_SOURCE)
+        self.assertIn("static int editor_new_file_modal", EDITOR_SOURCE)
+        self.assertIn("editor_file_picker(requestedPath", EDITOR_SOURCE)
+        self.assertIn("[ New text file ]", EDITOR_SOURCE)
+        self.assertIn("Backspace Parent", EDITOR_SOURCE)
+        self.assertNotIn("read_line(", EDITOR_SOURCE)
+        editor_draw = EDITOR_SOURCE.split("static void editor_draw", 1)[1].split(
+            "static int editor_save", 1
+        )[0]
+        picker_draw = EDITOR_SOURCE.split("static void editor_picker_draw", 1)[1].split(
+            "static void editor_new_file_draw", 1
+        )[0]
+        modal_draw = EDITOR_SOURCE.split("static void editor_new_file_draw", 1)[1].split(
+            "static int editor_new_file_modal", 1
+        )[0]
+        self.assertNotIn("ClearScreen", editor_draw)
+        self.assertNotIn("ClearScreen", picker_draw)
+        self.assertNotIn("ClearScreen", modal_draw)
+        self.assertEqual(EDITOR_SOURCE.count("ClearScreen"), 2)
+        self.assertIn("gEditorScreenValid", EDITOR_SOURCE)
+        self.assertIn("if (unchanged) return", EDITOR_SOURCE)
+        self.assertIn("static void editor_wait_key", EDITOR_SOURCE)
+        self.assertEqual(EDITOR_SOURCE.count("editor_wait_key(&key);"), 3)
 
     def test_settings_is_full_screen_and_auto_saves(self) -> None:
         settings_ui = source_block(

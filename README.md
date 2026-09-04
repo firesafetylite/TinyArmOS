@@ -128,7 +128,7 @@ df
 sync
 fsck
 fault PATH
-edit [PATH]
+textedit [PATH]
 ```
 
 `rm -rf` recursively removes files and directories and refuses an in-use working-directory tree. Exact `rm -rf /` is protected: first run `protect unlock` and type `UNLOCK`. It then empties the entire currently booted system/data partition—including snapshots, user files, settings, Freedoom, and every other entry—and powers off.
@@ -180,12 +180,14 @@ The unlock applies only to the current boot. Creation, writing, copying, moving,
 The native Text Editor can open an existing MiniFS2 text file or create a new one:
 
 ```text
-edit /home/notes/todo.txt
-edit                         prompt for a path
-edit /apps/doom/app.info     view protected app metadata read-only
+textedit /home/notes/todo.txt
+textedit                     open the interactive file picker
+textedit /apps/doom/app.info view protected app metadata read-only
 ```
 
-Use the arrow keys to move, Home/End within a line, PageUp/PageDown by one screen, Backspace/Delete to remove text, and Enter to insert a line. Press **F2** or **Ctrl+S** to save a persistent MiniFS snapshot. Press **Esc** to exit; if there are unsaved changes, press it a second time to confirm discarding them. Files are limited to 8191 bytes of ASCII text.
+Launching bare `textedit` opens a full-screen file manager inside the app. Use Up/Down and Enter to browse directories or open a file, Backspace to visit the parent directory, **N** to open the new-file modal, and Esc to cancel. The selector and editor update rows in place without clearing the console on every keypress.
+
+While editing, use the arrow keys to move, Home/End within a line, PageUp/PageDown by one screen, Backspace/Delete to remove text, and Enter to insert a line. Press **F2** or **Ctrl+S** to save a persistent MiniFS snapshot. Press **Esc** to exit; if there are unsaved changes, press it a second time to confirm discarding them. Files are limited to 8191 bytes of ASCII text.
 
 Files under `/system`, `/apps`, and `/lost+found` open read-only while protection is locked. To intentionally edit one, leave the editor, run `protect unlock`, confirm `UNLOCK`, and reopen it. Ordinary files under `/home` remain directly editable.
 
@@ -254,7 +256,7 @@ info
 uptime
 count
 partitions
-edit [PATH]
+textedit [PATH]
 settings
 protect [status|unlock|lock]
 update [check] [main|nightly]
