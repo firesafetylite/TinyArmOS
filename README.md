@@ -92,7 +92,7 @@ MiniFS2 provides:
 - Persistent storage across reboots
 - Absolute, relative, `~`, `cd`, and `cd -` navigation
 - Friendly `go`, `open`, `home`, `root`, `up`, and `back` navigation
-- Native full-screen editor for viewing, creating, and editing ASCII text files
+- Native full-screen editor with soft wrapping for viewing, creating, and editing ASCII text files
 - 256-line shell scrollback with arrow-key and PageUp/PageDown navigation
 - Nested directories and directory-aware `cp`/`mv`
 - 96 fixed nodes with up to 8191 data bytes per file
@@ -187,7 +187,7 @@ textedit /apps/doom/app.info view protected app metadata read-only
 
 Launching bare `textedit` opens a full-screen file manager inside the app. Use Up/Down and Enter to browse directories or open a file; Left Arrow, Backspace, **B**, or the selectable `..` entry returns to the parent directory. Press **N** to open the new-file modal, where Left Arrow or Esc returns to the picker, and press Esc at the picker to exit. The selector and editor update rows in place without clearing the console on every keypress.
 
-While editing, use the arrow keys to move, Home/End within a line, PageUp/PageDown by one screen, Backspace/Delete to remove text, and Enter to insert a line. Press **F2** or **Ctrl+S** to save a persistent MiniFS snapshot. Press **Esc** to exit; if there are unsaved changes, press it a second time to confirm discarding them. Files are limited to 8191 bytes of ASCII text.
+While editing, text soft-wraps at the screen edge without inserting newlines. Left/Right moves by character; Up/Down moves through wrapped display rows and automatically scrolls when the cursor reaches the viewport edge. Home, End, PageUp, and PageDown have no editor bindings. Use Backspace/Delete to remove text and Enter to insert a real line. Press **F2** or **Ctrl+S** to save a persistent MiniFS snapshot. Press **Esc** to exit; if there are unsaved changes, press it a second time to confirm discarding them. Files are limited to 8191 bytes of ASCII text.
 
 Files under `/system`, `/apps`, and `/lost+found` open read-only while protection is locked. To intentionally edit one, leave the editor, run `protect unlock`, confirm `UNLOCK`, and reopen it. Ordinary files under `/home` remain directly editable.
 

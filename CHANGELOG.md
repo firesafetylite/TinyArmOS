@@ -16,6 +16,7 @@ Notable changes to TinyArmOS are documented here. This project follows [Keep a C
 - Replace the short-lived `edit` command with the canonical `textedit` app command.
 - Eliminate Text Editor flicker by caching screen rows and repainting only content that changed instead of clearing the console per keypress.
 - Add Left Arrow, Backspace, and **B** parent-directory navigation to the Text Editor picker, plus Left Arrow/Esc return controls in its new-file modal.
+- Soft-wrap editor text at the screen edge; Up/Down now traverses wrapped rows and scrolls automatically, while Home/End/PageUp/PageDown editor bindings are removed.
 - Redraw the interrupted-startup partition selector in place instead of appending a new output line for every selection.
 - Document and validate the persistent UTM PFlash arrangement that keeps HTTP/TLS-capable firmware independent from TinyArmOS disk updates.
 - Seed newly created partitions for automatic first-boot TinyArmOS initialization, eliminating the misleading unavailable-OS result after their required firmware reboot.

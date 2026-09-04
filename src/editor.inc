@@ -2,11 +2,7 @@
 #define EDITOR_SCAN_DOWN      2U
 #define EDITOR_SCAN_RIGHT     3U
 #define EDITOR_SCAN_LEFT      4U
-#define EDITOR_SCAN_HOME      5U
-#define EDITOR_SCAN_END       6U
 #define EDITOR_SCAN_DELETE    8U
-#define EDITOR_SCAN_PAGE_UP   9U
-#define EDITOR_SCAN_PAGE_DOWN 10U
 #define EDITOR_SCAN_F2        12U
 #define EDITOR_SCAN_ESCAPE    23U
 #define EDITOR_SCREEN_ROWS    64U
@@ -16,54 +12,98 @@ static FS_NODE gEditorSaveBackup;
 static char gEditorScreen[EDITOR_SCREEN_ROWS][SCROLLBACK_COLUMNS];
 static UINT8 gEditorScreenValid[EDITOR_SCREEN_ROWS];
 
-static UINTN editor_line_start(const char *buffer, UINTN cursor) {
-    while (cursor && buffer[cursor - 1U] != '\n') cursor--;
-    return cursor;
-}
-
-static UINTN editor_line_end(const char *buffer, UINTN length, UINTN cursor) {
-    while (cursor < length && buffer[cursor] != '\n') cursor++;
-    return cursor;
-}
-
-static UINTN editor_line_number(const char *buffer, UINTN cursor) {
-    UINTN index;
-    UINTN line = 0;
-    for (index = 0; index < cursor; index++) if (buffer[index] == '\n') line++;
-    return line;
-}
-
-static UINTN editor_line_offset(const char *buffer, UINTN length, UINTN wantedLine) {
-    UINTN offset = 0;
-    UINTN line = 0;
-    while (line < wantedLine) {
-        while (offset < length && buffer[offset] != '\n') offset++;
-        if (offset >= length) return length + 1U;
-        offset++;
-        line++;
+static void editor_visual_advance(
+    char ch, UINTN width, UINTN *row, UINTN *column, int *wrapped
+) {
+    if (ch == '\n') {
+        if (*wrapped) *wrapped = 0;
+        else {
+            (*row)++;
+            *column = 0;
+        }
+        return;
     }
-    return offset;
+    *wrapped = 0;
+    (*column)++;
+    if (*column >= width) {
+        (*row)++;
+        *column = 0;
+        *wrapped = 1;
+    }
+}
+
+static void editor_visual_position(
+    const char *buffer, UINTN cursor, UINTN width, UINTN *rowOut, UINTN *columnOut
+) {
+    UINTN offset;
+    UINTN row = 0;
+    UINTN column = 0;
+    int wrapped = 0;
+    for (offset = 0; offset < cursor; offset++)
+        editor_visual_advance(buffer[offset], width, &row, &column, &wrapped);
+    *rowOut = row;
+    *columnOut = column;
+}
+
+static int editor_visual_offset(
+    const char *buffer, UINTN length, UINTN width, UINTN targetRow,
+    UINTN targetColumn, UINTN *offsetOut
+) {
+    UINTN offset;
+    UINTN row = 0;
+    UINTN column = 0;
+    UINTN best = 0;
+    int wrapped = 0;
+    int found = 0;
+    for (offset = 0; offset <= length; offset++) {
+        if (row == targetRow) {
+            if (column <= targetColumn) {
+                best = offset;
+                found = 1;
+            } else break;
+        } else if (row > targetRow) break;
+        if (offset == length) break;
+        editor_visual_advance(buffer[offset], width, &row, &column, &wrapped);
+    }
+    if (!found) return 0;
+    *offsetOut = best;
+    return 1;
 }
 
 static UINTN editor_move_vertical(
-    const char *buffer, UINTN length, UINTN cursor, int direction
+    const char *buffer, UINTN length, UINTN cursor, UINTN width, int direction
 ) {
-    UINTN start = editor_line_start(buffer, cursor);
-    UINTN column = cursor - start;
-    UINTN targetStart;
-    UINTN targetEnd;
+    UINTN row;
+    UINTN column;
+    UINTN target;
+    editor_visual_position(buffer, cursor, width, &row, &column);
     if (direction < 0) {
-        if (!start) return cursor;
-        targetEnd = start - 1U;
-        targetStart = editor_line_start(buffer, targetEnd);
-    } else {
-        UINTN end = editor_line_end(buffer, length, cursor);
-        if (end >= length) return cursor;
-        targetStart = end + 1U;
-        targetEnd = editor_line_end(buffer, length, targetStart);
+        if (!row) return cursor;
+        row--;
+    } else row++;
+    if (!editor_visual_offset(buffer, length, width, row, column, &target)) return cursor;
+    return target;
+}
+
+static void editor_visual_row_text(
+    const char *buffer, UINTN length, UINTN width, UINTN targetRow,
+    char output[SCROLLBACK_COLUMNS]
+) {
+    UINTN offset;
+    UINTN row = 0;
+    UINTN column = 0;
+    UINTN used = 0;
+    int wrapped = 0;
+    for (offset = 0; offset < length; offset++) {
+        char ch = buffer[offset];
+        if (row == targetRow && ch != '\n' && column < width) {
+            output[column] = ch == '\t' ? ' ' : ch;
+            if (column + 1U > used) used = column + 1U;
+        }
+        editor_visual_advance(ch, width, &row, &column, &wrapped);
+        if (row > targetRow) break;
     }
-    if (column > targetEnd - targetStart) column = targetEnd - targetStart;
-    return targetStart + column;
+    output[used] = 0;
 }
 
 static int editor_insert(char *buffer, UINTN *length, UINTN *cursor, char ch) {
@@ -158,26 +198,23 @@ static void editor_write_row(UINTN row, const char *text, UINTN columns) {
 }
 
 static void editor_draw(
-    const char *path, UINTN length, UINTN cursor, UINTN *topLine,
-    UINTN *leftColumn, int readOnly, int modified, const char *notice
+    const char *path, UINTN length, UINTN cursor, UINTN *topRow,
+    int readOnly, int modified, const char *notice
 ) {
     char pathLine[SCROLLBACK_COLUMNS];
     char visible[SCROLLBACK_COLUMNS];
     UINTN columns;
     UINTN rows;
     UINTN contentRows;
-    UINTN cursorLine = editor_line_number(gEditorBuffer, cursor);
-    UINTN cursorStart = editor_line_start(gEditorBuffer, cursor);
-    UINTN cursorColumn = cursor - cursorStart;
+    UINTN cursorRow;
+    UINTN cursorColumn;
     UINTN row;
     editor_dimensions(&columns, &rows);
     contentRows = rows - 4U;
-    if (cursorLine < *topLine) *topLine = cursorLine;
-    else if (cursorLine >= *topLine + contentRows)
-        *topLine = cursorLine - contentRows + 1U;
-    if (cursorColumn < *leftColumn) *leftColumn = cursorColumn;
-    else if (cursorColumn >= *leftColumn + columns)
-        *leftColumn = cursorColumn - columns + 1U;
+    editor_visual_position(gEditorBuffer, cursor, columns, &cursorRow, &cursorColumn);
+    if (cursorRow < *topRow) *topRow = cursorRow;
+    else if (cursorRow >= *topRow + contentRows)
+        *topRow = cursorRow - contentRows + 1U;
 
     settings_use_accent_color();
     editor_write_row(0, "=== TinyArmOS Text Editor ===", columns);
@@ -189,28 +226,17 @@ static void editor_draw(
     editor_write_row(1, pathLine, columns);
 
     for (row = 0; row < contentRows; row++) {
-        UINTN offset = editor_line_offset(gEditorBuffer, length, *topLine + row);
-        UINTN skipped = 0;
-        UINTN used = 0;
-        if (offset <= length) {
-            while (offset < length && gEditorBuffer[offset] != '\n' && skipped < *leftColumn) {
-                offset++;
-                skipped++;
-            }
-            while (offset < length && gEditorBuffer[offset] != '\n' && used < columns) {
-                char ch = gEditorBuffer[offset++];
-                visible[used++] = ch == '\t' ? ' ' : ch;
-            }
-        }
-        visible[used] = 0;
+        editor_visual_row_text(
+            gEditorBuffer, length, columns, *topRow + row, visible
+        );
         editor_write_row(2U + row, visible, columns);
     }
-    editor_write_row(rows - 2U, notice ? notice : "ASCII text; maximum file size is 8191 bytes.", columns);
+    editor_write_row(rows - 2U, notice ? notice : "Soft wrap is on; Up/Down moves and scrolls wrapped rows.", columns);
     settings_use_accent_color();
-    editor_write_row(rows - 1U, "F2/Ctrl+S Save | Esc Exit | Arrows Move | Home/End | PgUp/PgDn", columns);
+    editor_write_row(rows - 1U, "F2/Ctrl+S Save | Esc Exit | Arrow Keys Move/Scroll | Backspace/Delete", columns);
     settings_use_default_color();
     gST->ConOut->SetCursorPosition(
-        gST->ConOut, cursorColumn - *leftColumn, 2U + cursorLine - *topLine
+        gST->ConOut, cursorColumn, 2U + cursorRow - *topRow
     );
     gST->ConOut->EnableCursor(gST->ConOut, 1);
 }
@@ -391,26 +417,15 @@ static int editor_file_picker(char *path, UINTN capacity) {
         UINTN nodeCount = editor_picker_collect(directory, nodes);
         UINTN specials = directory == FS_ROOT ? 1U : 2U;
         UINTN itemCount = nodeCount + specials;
-        UINTN columns;
-        UINTN rows;
-        UINTN page;
         if (selected >= itemCount) selected = itemCount - 1U;
         editor_picker_draw(directory, nodes, nodeCount, selected, &topItem, notice);
         notice = (const char *)0;
         editor_wait_key(&key);
-        editor_dimensions(&columns, &rows);
-        page = rows - 5U;
         if (key.ScanCode == EDITOR_SCAN_ESCAPE || key.UnicodeChar == 27U) return 0;
         if (key.ScanCode == EDITOR_SCAN_UP) {
             selected = selected ? selected - 1U : itemCount - 1U;
         } else if (key.ScanCode == EDITOR_SCAN_DOWN) {
             selected = selected + 1U < itemCount ? selected + 1U : 0U;
-        } else if (key.ScanCode == EDITOR_SCAN_HOME) selected = 0;
-        else if (key.ScanCode == EDITOR_SCAN_END) selected = itemCount - 1U;
-        else if (key.ScanCode == EDITOR_SCAN_PAGE_UP) {
-            selected = selected > page ? selected - page : 0U;
-        } else if (key.ScanCode == EDITOR_SCAN_PAGE_DOWN) {
-            selected = selected + page < itemCount ? selected + page : itemCount - 1U;
         } else if (key.ScanCode == EDITOR_SCAN_LEFT ||
                    key.ScanCode == EDITOR_SCAN_DELETE || key.UnicodeChar == 8U ||
                    key.UnicodeChar == 127U || key.UnicodeChar == 'b' ||
@@ -466,10 +481,9 @@ static void command_textedit(const char *command) {
     UINTN parent = FS_ROOT;
     UINTN length = 0;
     UINTN cursor = 0;
-    UINTN topLine = 0;
-    UINTN leftColumn = 0;
-    UINTN contentRows;
+    UINTN topRow = 0;
     UINTN screenColumns;
+    UINTN screenRows;
     UINT8 previousScrollback = gScrollbackEnabled;
     int node;
     int readOnly;
@@ -511,12 +525,11 @@ static void command_textedit(const char *command) {
     editor_screen_reset();
 
     for (;;) {
-        editor_draw(displayPath, length, cursor, &topLine, &leftColumn,
+        editor_draw(displayPath, length, cursor, &topRow,
                     readOnly, modified, notice);
         notice = (const char *)0;
         editor_wait_key(&key);
-        editor_dimensions(&screenColumns, &contentRows);
-        contentRows -= 4U;
+        editor_dimensions(&screenColumns, &screenRows);
         if (key.ScanCode == EDITOR_SCAN_ESCAPE || key.UnicodeChar == 27U) {
             if (modified && !discardArmed) {
                 notice = "Unsaved changes: press F2 to save or Esc again to discard.";
@@ -547,21 +560,13 @@ static void command_textedit(const char *command) {
         } else if (key.ScanCode == EDITOR_SCAN_RIGHT) {
             if (cursor < length) cursor++;
         } else if (key.ScanCode == EDITOR_SCAN_UP) {
-            cursor = editor_move_vertical(gEditorBuffer, length, cursor, -1);
+            cursor = editor_move_vertical(
+                gEditorBuffer, length, cursor, screenColumns, -1
+            );
         } else if (key.ScanCode == EDITOR_SCAN_DOWN) {
-            cursor = editor_move_vertical(gEditorBuffer, length, cursor, 1);
-        } else if (key.ScanCode == EDITOR_SCAN_HOME) {
-            cursor = editor_line_start(gEditorBuffer, cursor);
-        } else if (key.ScanCode == EDITOR_SCAN_END) {
-            cursor = editor_line_end(gEditorBuffer, length, cursor);
-        } else if (key.ScanCode == EDITOR_SCAN_PAGE_UP) {
-            UINTN count;
-            for (count = 0; count < contentRows; count++)
-                cursor = editor_move_vertical(gEditorBuffer, length, cursor, -1);
-        } else if (key.ScanCode == EDITOR_SCAN_PAGE_DOWN) {
-            UINTN count;
-            for (count = 0; count < contentRows; count++)
-                cursor = editor_move_vertical(gEditorBuffer, length, cursor, 1);
+            cursor = editor_move_vertical(
+                gEditorBuffer, length, cursor, screenColumns, 1
+            );
         } else if (readOnly && (key.ScanCode == EDITOR_SCAN_DELETE || key.UnicodeChar)) {
             notice = "Read-only: exit, run 'protect unlock', then reopen to edit.";
         } else if (key.ScanCode == EDITOR_SCAN_DELETE) {

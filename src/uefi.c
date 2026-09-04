@@ -1495,7 +1495,7 @@ static int fs_restore_system(void) {
     int editorApp = -1;
     int shellApp = -1;
     const char *editorAppInfo =
-        "name=TinyArmOS Text Editor\nkind=native full-screen app\ncommand=textedit [PATH]\nfile_picker=interactive when PATH is omitted\nformat=ASCII text\nfile_limit=8191 bytes\nprotected_paths=require protect unlock";
+        "name=TinyArmOS Text Editor\nkind=native full-screen app\ncommand=textedit [PATH]\nfile_picker=interactive when PATH is omitted\nformat=ASCII text\ndisplay_wrap=soft at screen edge\nscroll=Up/Down arrow keys\nfile_limit=8191 bytes\nprotected_paths=require protect unlock";
     fs_ensure_dir(FS_ROOT, "tmp", 0);
     fs_ensure_dir(FS_ROOT, "lost+found", FS_PROTECTED);
     if (system >= 0) {
@@ -1591,7 +1591,7 @@ static int fs_restore_system(void) {
     if (editorApp >= 0) {
         fs_ensure_file((UINTN)editorApp, "app.info", editorAppInfo, FS_PROTECTED);
         fs_ensure_file((UINTN)editorApp, "controls.txt",
-            "Arrows move cursor\nHome/End move within line\nPageUp/PageDown move one screen\nBackspace/Delete remove text\nEnter inserts a line\nF2 or Ctrl+S saves\nEsc exits; press twice to discard changes", FS_PROTECTED);
+            "Left/Right move by character\nUp/Down move through wrapped rows and scroll\nBackspace/Delete remove text\nEnter inserts a line\nF2 or Ctrl+S saves\nEsc exits; press twice to discard changes\nHome/End/PageUp/PageDown are unused", FS_PROTECTED);
     }
     if (shellApp >= 0) fs_ensure_file((UINTN)shellApp, "app.info",
         "name=TinyArmOS Shell\nkind=built-in\nfilesystem=MiniFS2\ncommands=help,settings,textedit", FS_PROTECTED);
