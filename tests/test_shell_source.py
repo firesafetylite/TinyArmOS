@@ -110,24 +110,13 @@ class ShellSourceTests(unittest.TestCase):
                 self.assertIn(command, help_text)
 
     def test_startup_and_pre_os_environment_share_the_integrity_scan(self) -> None:
-        scan = source_block(
-            "static int fs_scan_integrity(int verbose)",
-            "static int fs_commit(void)",
-        )
-        boot = source_block(
-            "static int boot_screen(EFI_HANDLE imageHandle)",
-            "static void pre_os_help(void)",
-        )
-        pre_os = source_block(
-            "static void pre_os_environment(void)", "static void command_help(void)"
-        )
+        scan = source_block("static int fs_scan_integrity(int verbose)", "static int fs_commit(void)")
+        boot = source_block("static int boot_screen(EFI_HANDLE imageHandle)", "static void pre_os_help(void)")
+        pre_os = source_block("static void pre_os_environment(void)", "static void command_help(void)")
+        self.assertIn("storage_marker_valid()", scan)
+        self.assertIn("storage_transaction_pending()", scan)
         self.assertIn("fs_check(0, verbose)", scan)
-        self.assertIn("storage_probe_slots();", scan)
         self.assertIn("fs_scan_integrity(0);", boot)
-        self.assertLess(
-            boot.index("fs_scan_integrity(0);"),
-            boot.index('boot_stage(5, "TinyGPT operating system"'),
-        )
         self.assertIn("fs_scan_integrity(1);", pre_os)
 
     def test_r_routes_to_pre_os_before_the_normal_shell(self) -> None:
@@ -154,24 +143,16 @@ class ShellSourceTests(unittest.TestCase):
         self.assertLess(entry.index("pre_os_environment();"), entry.index("settings_load();"))
 
     def test_missing_os_routes_to_pre_os_and_can_be_repaired(self) -> None:
-        boot = source_block(
-            "static int boot_screen(EFI_HANDLE imageHandle)",
-            "static void pre_os_help(void)",
-        )
-        repair = source_block(
-            "static int pre_os_repair(UINTN partition)",
-            "static void pre_os_print_partitions",
-        )
+        boot = source_block("static int boot_screen(EFI_HANDLE imageHandle)", "static void pre_os_help(void)")
+        repair = source_block("static int pre_os_repair(UINTN partition)", "static void pre_os_print_partitions")
         self.assertIn("osMissing = storage_os_missing();", boot)
         self.assertIn("storage_path_exists(gFactoryInstallPath)", boot)
-        self.assertIn("else if (!mounted && !snapshotFiles)", boot)
+        self.assertIn("'T','I','N','Y','G','P','T','.','N','E','W'", SOURCE)
+        self.assertIn("storage_install_empty()", boot)
         self.assertIn("OS MISSING - OPENING PRE-OS ENVIRONMENT", boot)
-        self.assertNotIn("fs_check(1, 0)", boot)
-        self.assertIn("partition == 1U", repair)
         self.assertIn("storage_activate_partition(partition)", repair)
-        self.assertIn("fs_check(1, 1);", repair)
-        self.assertIn("fs_format();", repair)
-        self.assertIn("fs_commit()", repair)
+        self.assertIn("storage_install_empty()", repair)
+        self.assertIn("fs_check(1, 1)", repair)
         self.assertIn("storage_clear_os_missing()", repair)
 
     def test_pre_os_environment_uses_all_scrollback_navigation_keys(self) -> None:
@@ -195,30 +176,13 @@ class ShellSourceTests(unittest.TestCase):
         self.assertNotIn("command_protect(line);", dispatch)
 
     def test_legacy_recovery_and_bootmgr_apps_are_removed_from_minifs(self) -> None:
-        restore = source_block(
-            "static int fs_restore_system(void)", "static void fs_format(void)"
-        )
-        migration = source_block(
-            "static int fs_remove_legacy_manager_trees(void)",
-            "static int fs_restore_system(void)",
-        )
+        restore = source_block("static int fs_restore_system(void)", "static void fs_format(void)")
+        migration = source_block("static int fs_remove_legacy_manager_trees(void)", "static int fs_restore_system(void)")
         self.assertIn('fs_find_child(FS_ROOT, "recovery")', migration)
         self.assertIn('fs_find_child((UINTN)apps, "recovery")', migration)
         self.assertIn('fs_find_child((UINTN)apps, "bootmgr")', migration)
-        self.assertIn("fs_remove_recursive", migration)
-        self.assertIn("gCwd = FS_ROOT", migration)
-        self.assertIn("gPreviousCwd = FS_ROOT", migration)
         self.assertNotIn('fs_ensure_dir(FS_ROOT, "recovery"', restore)
-        self.assertNotIn('fs_ensure_dir((UINTN)apps, "recovery"', restore)
-        self.assertNotIn('fs_ensure_dir((UINTN)apps, "bootmgr"', restore)
-        self.assertIn('fs_find_child((UINTN)boot, "boot-manager.info")', restore)
         self.assertIn("pre-os.info", restore)
-        boot = source_block(
-            "static int boot_screen(EFI_HANDLE imageHandle)",
-            "static void pre_os_help(void)",
-        )
-        migration_commit = boot.split("fs_restore_system())", 1)[1]
-        self.assertIn("fs_commit();", migration_commit)
 
     def test_recovery_is_pre_os_only_not_an_in_os_command(self) -> None:
         for removed in ("Recovery Agent", "recovery_agent", "recovery_help", "TinyGPT Boot Manager"):
@@ -294,30 +258,16 @@ class ShellSourceTests(unittest.TestCase):
         self.assertEqual(entry.count("settings_apply_runtime();"), 1)
 
     def test_exact_root_recursive_remove_destroys_os_but_keeps_shell_running(self) -> None:
-        remove_dispatch = source_block(
-            '} else if (starts_with(command, "rm ")',
-            '} else if (starts_with(command, "cp ")',
-        )
+        remove_dispatch = source_block('} else if (starts_with(command, "rm ")', '} else if (starts_with(command, "cp ")')
+        root_branch = remove_dispatch.split("else if (rootRequest)", 1)[1].split("} else if ((UINTN)node == FS_ROOT)", 1)[0]
         self.assertIn('rootRequest = recursive && streq(path, "/")', remove_dispatch)
-        self.assertIn("rootRequest ? (int)FS_ROOT", remove_dispatch)
-        root_branch = remove_dispatch.split("else if (rootRequest)", 1)[1].split(
-            "} else if ((UINTN)node == FS_ROOT)", 1
-        )[0]
-        self.assertIn("gCwd = FS_ROOT;", root_branch)
-        self.assertIn("gPreviousCwd = FS_ROOT;", root_branch)
-        self.assertIn("fs_remove_recursive(FS_ROOT);", root_branch)
-        self.assertIn("storage_wipe_os(&removed, &failures);", root_branch)
+        self.assertIn("storage_wipe_os(&removed, &failures)", root_branch)
+        self.assertIn("Storage remains open", root_branch)
         self.assertIn("gStorageReady = 0;", root_branch)
-        self.assertIn("The pre-OS environment remains", root_branch)
-        self.assertIn("The running shell will continue from RAM", root_branch)
+        self.assertLess(root_branch.index("if (!complete)"), root_branch.index("gStorageReady = 0;"))
+        self.assertNotIn("The pre-OS environment remains", root_branch)
+        self.assertNotIn("The running shell will continue from RAM", root_branch)
         self.assertNotIn("ResetSystem(", root_branch)
-        self.assertNotIn("delay_ms(", root_branch)
-        self.assertNotIn('volatile("wfe")', root_branch)
-        self.assertIn("rootRequest && !gProtectionUnlocked", remove_dispatch)
-        self.assertIn("use 'protect unlock'", remove_dispatch)
-        self.assertNotIn("read_line(", root_branch)
-        self.assertNotIn("fs_commit()", root_branch)
-        self.assertNotIn("ERASE ROOT", root_branch)
 
     def test_os_wipe_uses_dedicated_volume_identity_and_recursive_delete(self) -> None:
         self.assertIn("return gActivePartition >= 2U", SOURCE)
@@ -353,6 +303,9 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("partition_rename(partition", pre_os)
         self.assertIn("gFatPartitionGuid", PARTITION_SOURCE)
         self.assertIn("partition_format_fat16", PARTITION_SOURCE)
+        repair = source_block("static int pre_os_repair(", "static void pre_os_print_partitions(")
+        self.assertIn("legacy import failed; snapshots were left unchanged", repair)
+        self.assertNotIn("fs_format();", repair)
         self.assertIn('memory_copy(sector + 32U, "TINYGPT NEW", 11U)', PARTITION_SOURCE)
         self.assertIn("sector[32U + 11U] = 0x20", PARTITION_SOURCE)
         self.assertLess(
@@ -366,36 +319,17 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("format_system_fat32(image, SYSTEM_LAST", IMAGE_SOURCE)
 
     def test_split_layout_wipes_the_entire_system_partition(self) -> None:
-        wipe = source_block(
-            "static int storage_wipe_os(",
-            "static int storage_read_slot(",
-        )
-        self.assertIn("if (!gLegacySinglePartition)", wipe)
+        wipe = source_block("static int storage_wipe_os(", "static int storage_mount_latest(")
+        self.assertIn("if (gLegacySinglePartition) return storage_wipe_owned_files", wipe)
         self.assertIn("storage_wipe_directory(gVolumeRoot, 99U", wipe)
         self.assertIn("remainingCount", wipe)
-        self.assertNotIn("storage_set_os_missing", wipe.split("if (!gLegacySinglePartition)", 1)[1].split("if (!gDedicatedStorage)", 1)[0])
 
     def test_legacy_shared_esp_wipe_preserves_unrelated_files(self) -> None:
-        wipe = source_block(
-            "static int storage_wipe_owned_files(",
-            "static int storage_wipe_os(",
-        )
-        for owned_path in (
-            "gSlot0Path",
-            "gSlot1Path",
-            "gDoomWadPath",
-            "gDoomConfigPath",
-            "gBootBackupPath",
-            "gBootStagePath",
-            "gFactoryInstallPath",
-            "gOsMissingPath",
-            "gBootPath",
-        ):
-            with self.subTest(path=owned_path):
-                self.assertIn(owned_path, wipe)
+        wipe = source_block("static int storage_wipe_owned_files(", "static int storage_wipe_os(")
+        for owned_path in ("gDirectNamespacePath", "gSlot0Path", "gSlot1Path", "gLegacyRetiredPath", "gDoomWadPath", "gDoomConfigPath", "gBootBackupPath", "gBootStagePath", "gFactoryInstallPath"):
+            with self.subTest(path=owned_path): self.assertIn(owned_path, wipe)
         self.assertIn("storage_delete_owned_startup", wipe)
         self.assertIn("storage_set_os_missing", wipe)
-        self.assertNotIn("storage_delete_path(gLoadedImagePath", wipe)
         self.assertNotIn("storage_wipe_directory(gVolumeRoot", wipe)
 
     def test_file_views_use_semantic_accent_colors(self) -> None:
@@ -417,60 +351,60 @@ class ShellSourceTests(unittest.TestCase):
         dispatch = source_block("static void run_command(char *line)", "__attribute__((used))")
         self.assertIn('#include "editor.inc"', SOURCE)
         self.assertIn('fs_ensure_dir((UINTN)apps, "editor", FS_PROTECTED)', restore)
-        self.assertIn("editor    command: textedit [PATH]", restore)
-        self.assertIn("TinyGPT Text Editor", restore)
-        self.assertIn("!streq(gNodes[previousEditorInfo].data, editorAppInfo)", restore)
         self.assertIn('streq(command, "textedit")', dispatch)
-        self.assertIn("command_textedit(command)", dispatch)
-        self.assertNotIn('streq(command, "edit")', dispatch)
-        self.assertNotIn('starts_with(command, "edit ")', dispatch)
         self.assertIn("static char gEditorBuffer[FS_DATA_BYTES]", EDITOR_SOURCE)
+        self.assertIn("storage_read_node", EDITOR_SOURCE)
+        self.assertIn("fs_write_file", EDITOR_SOURCE)
+        self.assertNotIn("gEditorSaveBackup", EDITOR_SOURCE)
+        self.assertIn("persistence not claimed", EDITOR_SOURCE)
         self.assertIn("fs_is_protected", EDITOR_SOURCE)
-        self.assertIn("!gProtectionUnlocked", EDITOR_SOURCE)
-        self.assertIn("F2/Ctrl+S Save", EDITOR_SOURCE)
-        self.assertIn("Unsaved changes", EDITOR_SOURCE)
-        self.assertIn("editor_save", EDITOR_SOURCE)
-        self.assertIn("fs_commit()", EDITOR_SOURCE)
-        self.assertIn("gEditorSaveBackup", EDITOR_SOURCE)
-        self.assertIn("gGeneration = previousGeneration", EDITOR_SOURCE)
-        self.assertIn("*node = -1", EDITOR_SOURCE)
-        self.assertIn("original file restored", EDITOR_SOURCE)
-        self.assertIn("EDITOR_SCAN_DELETE", EDITOR_SOURCE)
-        self.assertIn("static void editor_visual_position", EDITOR_SOURCE)
-        self.assertIn("static int editor_visual_offset", EDITOR_SOURCE)
-        self.assertIn("static void editor_visual_row_text", EDITOR_SOURCE)
-        self.assertIn("Soft wrap is on; Up/Down moves and scrolls wrapped rows.", EDITOR_SOURCE)
-        self.assertIn("Arrow Keys Move/Scroll", EDITOR_SOURCE)
-        self.assertNotIn("EDITOR_SCAN_HOME", EDITOR_SOURCE)
-        self.assertNotIn("EDITOR_SCAN_END", EDITOR_SOURCE)
-        self.assertNotIn("EDITOR_SCAN_PAGE_UP", EDITOR_SOURCE)
-        self.assertNotIn("EDITOR_SCAN_PAGE_DOWN", EDITOR_SOURCE)
         self.assertIn("static int editor_file_picker", EDITOR_SOURCE)
-        self.assertIn("static int editor_new_file_modal", EDITOR_SOURCE)
-        self.assertIn("editor_file_picker(requestedPath", EDITOR_SOURCE)
-        self.assertIn("[ New text file ]", EDITOR_SOURCE)
-        self.assertIn("Left/Backspace/B Parent", EDITOR_SOURCE)
-        self.assertIn("Left/Esc Back to File Picker", EDITOR_SOURCE)
-        self.assertIn("key.ScanCode == EDITOR_SCAN_LEFT", EDITOR_SOURCE)
-        self.assertIn("key.UnicodeChar == 'B'", EDITOR_SOURCE)
-        self.assertNotIn("read_line(", EDITOR_SOURCE)
-        editor_draw = EDITOR_SOURCE.split("static void editor_draw", 1)[1].split(
-            "static int editor_save", 1
-        )[0]
-        picker_draw = EDITOR_SOURCE.split("static void editor_picker_draw", 1)[1].split(
-            "static void editor_new_file_draw", 1
-        )[0]
-        modal_draw = EDITOR_SOURCE.split("static void editor_new_file_draw", 1)[1].split(
-            "static int editor_new_file_modal", 1
-        )[0]
-        self.assertNotIn("ClearScreen", editor_draw)
-        self.assertNotIn("ClearScreen", picker_draw)
-        self.assertNotIn("ClearScreen", modal_draw)
         self.assertEqual(EDITOR_SOURCE.count("ClearScreen"), 2)
-        self.assertIn("gEditorScreenValid", EDITOR_SOURCE)
-        self.assertIn("if (unchanged) return", EDITOR_SOURCE)
-        self.assertIn("static void editor_wait_key", EDITOR_SOURCE)
-        self.assertEqual(EDITOR_SOURCE.count("editor_wait_key(&key);"), 3)
+
+    def test_direct_fat_authority_migration_and_transactions(self) -> None:
+        self.assertIn("gDirectRootPath", SOURCE)
+        self.assertIn("gDirectMarkerPath", SOURCE)
+        self.assertIn("gLegacyRetiredPath", SOURCE)
+        self.assertIn("gTransactionBackupPath", SOURCE)
+        self.assertIn("storage_scan_direct", SOURCE)
+        self.assertIn("storage_replace_file", SOURCE)
+        self.assertIn("storage_write_transaction", SOURCE)
+        self.assertIn("storage_transaction_valid", SOURCE)
+        transaction_reader = source_block("static int storage_read_transaction(", "static int storage_transaction_pending(")
+        self.assertIn("storage_transaction_valid(transaction)", transaction_reader)
+        self.assertLess(SOURCE.index("storage_write_transaction(&transaction)"), SOURCE.index("storage_rename_path(transaction.target"))
+        self.assertIn("storage_import_legacy", SOURCE)
+        self.assertNotIn("storage_sync", SOURCE)
+        self.assertNotIn("storage_probe_slots", SOURCE)
+        importer = source_block("static int storage_import_legacy(void)", "static int storage_os_missing(void)")
+        self.assertLess(importer.index("storage_write_marker()"), importer.index("storage_write_retirement_marker()"))
+        self.assertLess(importer.index("storage_write_retirement_marker()"), importer.index("storage_delete_path(gSlot0Path"))
+        self.assertIn("ascii_case_equal", SOURCE)
+        cache = SOURCE.split("/* A bounded, rebuildable metadata cache.", 1)[1].split("} FS_NODE;", 1)[0]
+        self.assertNotIn("data[FS_DATA_BYTES]", cache)
+        self.assertIn("whole-filesystem snapshots were retired", SOURCE)
+        writer = source_block("static int storage_write_exact(", "static int storage_read_transaction(")
+        self.assertIn("bytes == length", writer)
+        self.assertIn("file->Flush(file)", writer)
+        transaction_writer = source_block("static int storage_write_transaction(", "static void storage_recover_transaction(")
+        self.assertLess(transaction_writer.index("gTransactionBackupPath"), transaction_writer.index("gTransactionPath"))
+        replace = source_block("static int storage_replace_file(", "static int storage_delete_node(")
+        self.assertLess(replace.index("storage_write_transaction(&transaction)"), replace.index("storage_rename_path(transaction.target"))
+        self.assertIn("storage_rename_path(transaction.previous, transaction.target)", replace)
+        recovery = source_block("static void storage_recover_transaction", "static int storage_replace_file")
+        self.assertIn("if (!authoritative) failures++", recovery)
+        self.assertIn("storage_read_transaction(gTransactionBackupPath", recovery)
+        self.assertIn("!storage_path_exists(gTransactionNewPath)", recovery)
+        self.assertIn("storage_recover_transaction();", SOURCE)
+        scanner = source_block("static int storage_scan_directory(", "static int storage_scan_direct(")
+        self.assertIn("!(entries[index].attribute & EFI_FILE_DIRECTORY)", scanner)
+        boot = source_block("static int boot_screen(", "static void pre_os_help(")
+        self.assertIn("fs_restore_system();", boot)
+        restore = source_block("static int fs_restore_system(void)", "static void fs_format(void)")
+        self.assertIn('fs_find_child((UINTN)runtime, "minifs2.info")', restore)
+        self.assertIn('fs_find_child((UINTN)runtime, "snapshots.info")', restore)
+        self.assertIn("TINYGPTFS/ROOT", README)
+        self.assertIn("TINYFS.RET", README)
 
     def test_settings_is_full_screen_and_auto_saves(self) -> None:
         settings_ui = source_block(

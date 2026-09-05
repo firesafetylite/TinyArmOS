@@ -7,8 +7,8 @@
 #define EDITOR_SCAN_ESCAPE    23U
 #define EDITOR_SCREEN_ROWS    64U
 
+/* The editor buffer is transient; the authoritative bytes stay in the FAT file. */
 static char gEditorBuffer[FS_DATA_BYTES];
-static FS_NODE gEditorSaveBackup;
 static char gEditorScreen[EDITOR_SCREEN_ROWS][SCROLLBACK_COLUMNS];
 static UINT8 gEditorScreenValid[EDITOR_SCREEN_ROWS];
 
@@ -125,14 +125,15 @@ static void editor_delete(char *buffer, UINTN *length, UINTN offset) {
 }
 
 static int editor_load_text(UINTN node, UINTN *lengthOut) {
+    char diskText[FS_DATA_BYTES];
+    UINTN diskLength = 0;
     UINTN input;
     UINTN output = 0;
-    if (gNodes[node].size >= FS_DATA_BYTES) return 0;
-    for (input = 0; input < gNodes[node].size; input++) {
-        UINT8 ch = (UINT8)gNodes[node].data[input];
+    if (!storage_read_node(node, diskText, sizeof(diskText), &diskLength)) return 0;
+    for (input = 0; input < diskLength; input++) {
+        UINT8 ch = (UINT8)diskText[input];
         if (ch == '\r') {
-            if (input + 1U < gNodes[node].size && gNodes[node].data[input + 1U] == '\n')
-                input++;
+            if (input + 1U < diskLength && diskText[input + 1U] == '\n') input++;
             ch = '\n';
         }
         if (!(ch == '\n' || ch == '\t' || (ch >= 32U && ch <= 126U))) return 0;
@@ -242,21 +243,15 @@ static void editor_draw(
 }
 
 static int editor_save(int *node, UINTN parent, const char *name, UINTN length) {
-    UINT64 previousGeneration = gGeneration;
     int created = *node < 0;
-    if (!created) memory_copy(&gEditorSaveBackup, &gNodes[*node], sizeof(FS_NODE));
-    else *node = fs_alloc(FS_FILE, parent, name, 0);
+    if (created) *node = fs_alloc(FS_FILE, parent, name, 0);
     if (*node < 0 || gNodes[*node].type != FS_FILE) return -1;
-    memory_zero(gNodes[*node].data, FS_DATA_BYTES);
-    memory_copy(gNodes[*node].data, gEditorBuffer, length);
-    gNodes[*node].size = length;
-    fs_update((UINTN)*node);
-    if (fs_commit()) return 1;
+    if (fs_write_file((UINTN)*node, gEditorBuffer, length)) return 1;
     if (created) {
+        (void)storage_delete_node((UINTN)*node);
         memory_zero(&gNodes[*node], sizeof(FS_NODE));
         *node = -1;
-    } else memory_copy(&gNodes[*node], &gEditorSaveBackup, sizeof(FS_NODE));
-    gGeneration = previousGeneration;
+    }
     return 0;
 }
 
@@ -338,7 +333,7 @@ static void editor_new_file_draw(
     settings_use_accent_color();
     editor_write_row(0, "=== TinyGPT Text Editor: New File ===", columns);
     settings_use_default_color();
-    editor_write_row(1, "Enter a MiniFS2 file name. The file is created when first saved.", columns);
+    editor_write_row(1, "Enter a FAT-backed file name. The file is created when first saved.", columns);
     input[0] = 0;
     string_append(input, "Location: ", sizeof(input));
     string_append(input, location, sizeof(input));
@@ -434,7 +429,7 @@ static int editor_file_picker(char *path, UINTN capacity) {
                 directory = gNodes[directory].parent;
                 selected = 0;
                 topItem = 0;
-            } else notice = "Already at the MiniFS2 root.";
+            } else notice = "Already at the filesystem root.";
         } else if (key.UnicodeChar == 'n' || key.UnicodeChar == 'N' ||
                    ((key.UnicodeChar == '\r' || key.UnicodeChar == '\n') && !selected)) {
             if (fs_is_protected(directory) && !gProtectionUnlocked) {
@@ -549,9 +544,9 @@ static void command_textedit(const char *command) {
                 modified = 0;
                 discardArmed = 0;
                 fs_path((UINTN)node, displayPath, sizeof(displayPath));
-                notice = "Saved persistent MiniFS snapshot.";
+                notice = "Saved authoritative FAT file.";
             } else if (!saved) {
-                notice = "Snapshot save failed; original file restored; editor text kept.";
+                notice = "Disk save incomplete; persistence not claimed; editor text kept for retry.";
             } else notice = "Save failed: filesystem is full or the path now exists.";
             continue;
         }

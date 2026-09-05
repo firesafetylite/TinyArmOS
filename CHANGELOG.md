@@ -6,7 +6,12 @@ Notable changes to TinyGPT are documented here. This project follows [Keep a Cha
 
 ### Changed
 
-- Keep the RAM-resident shell running after `rm -rf /` erases the system partition instead of powering off automatically.
+- Replace complete `TINYFS0.BIN`/`TINYFS1.BIN` working snapshots with authoritative individual FAT files and directories under `TINYGPTFS/ROOT`; RAM now holds bounded metadata and transient I/O/editor buffers only.
+- Journal direct file replacement, delete, and rename operations through checked UEFI writes, flushes, redundant recovery manifests, and recovery metadata, and report persistence failures instead of treating cache mutations as saved.
+- Import the newest fully valid legacy snapshot once when direct storage is absent, rejecting malformed or case-colliding trees, retiring legacy authority with durable `TINYFS.RET`, and removing legacy files only after the direct tree and markers verify.
+- Describe file hashes honestly as observational scan-time metadata rather than persisted content-integrity trust anchors.
+- Retire whole-filesystem snapshot rollback; recovery now validates the direct marker/tree/journal, repairs missing defaults without overwriting existing files, and offers explicit reset.
+- Keep the RAM-resident shell running after `rm -rf /` erases the system partition instead of powering off automatically; partial wipes retain an open storage handle for retry.
 
 ## [0.1.6] - 2026-09-04
 

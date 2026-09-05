@@ -325,6 +325,9 @@ typedef struct {
 #define FS_PROTECTED   1
 #define FS_IMAGE_MAGIC 0x3253464d52415954ULL
 #define FS_IMAGE_VERSION 3
+#define DIRECT_FS_MARKER_MAGIC 0x31534654U
+#define DIRECT_FS_MARKER_VERSION 1U
+#define LEGACY_RETIRE_MARKER_MAGIC 0x31544552U
 #define SETTINGS_DEFAULT_TEXT_COLOR 7U
 #define SETTINGS_DEFAULT_ACCENT_COLOR 11U
 #define SETTINGS_DEFAULT_BACKGROUND_COLOR 0U
@@ -340,12 +343,12 @@ static UINTN gActivePartition;
 static UINT64 gStartTicks;
 static UINT64 gTimerHz;
 static UINT64 gGeneration;
-static UINT64 gSlotGeneration[2];
-static UINT8 gSlotValid[2];
 static UINT8 gStorageReady;
 static UINT8 gDedicatedStorage;
 static UINT8 gLegacySinglePartition;
 static UINT8 gProtectionUnlocked;
+static UINT8 gPersistenceFailure;
+static UINT8 gTransactionCorrupt;
 static UINTN gCwd;
 static UINTN gPreviousCwd;
 static char gScrollback[SCROLLBACK_LINES][SCROLLBACK_COLUMNS];
@@ -371,6 +374,19 @@ static SHELL_SETTINGS gSettings;
 static void settings_use_default_color(void);
 static void settings_use_accent_color(void);
 
+/* A bounded, rebuildable metadata cache. File payloads remain authoritative FAT entries. */
+typedef struct {
+    UINT8 used;
+    UINT8 type;
+    UINT8 flags;
+    UINT8 reserved;
+    UINTN parent;
+    UINTN size;
+    UINT32 checksum;
+    char name[FS_NAME_BYTES];
+} FS_NODE;
+
+/* Kept only for validating and importing the previous on-disk format. */
 typedef struct {
     UINT8 used;
     UINT8 type;
@@ -381,7 +397,7 @@ typedef struct {
     UINT32 checksum;
     char name[FS_NAME_BYTES];
     char data[FS_DATA_BYTES];
-} FS_NODE;
+} LEGACY_FS_NODE;
 
 typedef struct {
     UINT64 magic;
@@ -393,8 +409,16 @@ typedef struct {
     UINT32 reserved;
 } FS_IMAGE_HEADER;
 
+typedef struct {
+    UINT32 magic;
+    UINT32 version;
+    UINT64 generation;
+    UINT32 checksum;
+} DIRECT_FS_MARKER;
+
 static FS_NODE gNodes[FS_MAX_NODES];
-static FS_NODE gLoadBuffer[FS_MAX_NODES];
+/* One bounded transient I/O buffer; never filesystem authority. */
+static char gFileBuffer[FS_DATA_BYTES];
 
 static UINT64 timer_count(void) {
     UINT64 value;
@@ -429,6 +453,13 @@ static void memory_copy(void *destination, const void *source, UINTN bytes) {
     UINT8 *out = (UINT8 *)destination;
     const UINT8 *in = (const UINT8 *)source;
     while (bytes--) *out++ = *in++;
+}
+
+static int memory_equal(const void *left, const void *right, UINTN bytes) {
+    const UINT8 *a = (const UINT8 *)left;
+    const UINT8 *b = (const UINT8 *)right;
+    while (bytes--) if (*a++ != *b++) return 0;
+    return 1;
 }
 
 static UINT32 hash_bytes(const void *data, UINTN bytes) {
@@ -678,8 +709,18 @@ static char *next_argument(char *text, char **remainder) {
     return start;
 }
 
+/* TINYFS*.BIN are legacy import sources only; direct FAT entries are authoritative. */
 static const CHAR16 gSlot0Path[] = {'\\','T','I','N','Y','F','S','0','.','B','I','N',0};
 static const CHAR16 gSlot1Path[] = {'\\','T','I','N','Y','F','S','1','.','B','I','N',0};
+static const CHAR16 gDirectNamespacePath[] = {'\\','T','I','N','Y','G','P','T','F','S',0};
+static const CHAR16 gDirectRootPath[] = {'\\','T','I','N','Y','G','P','T','F','S','\\','R','O','O','T',0};
+static const CHAR16 gDirectMarkerPath[] = {'\\','T','I','N','Y','G','P','T','F','S','\\','F','O','R','M','A','T','.','D','A','T',0};
+/* Outside the namespace so a damaged FORMAT.DAT cannot reactivate stale legacy slots. */
+static const CHAR16 gLegacyRetiredPath[] = {'\\','T','I','N','Y','F','S','.','R','E','T',0};
+static const CHAR16 gTransactionPath[] = {'\\','T','I','N','Y','G','P','T','F','S','\\','T','X','N','.','C','M','T',0};
+static const CHAR16 gTransactionBackupPath[] = {'\\','T','I','N','Y','G','P','T','F','S','\\','T','X','N','.','B','A','K',0};
+static const CHAR16 gTransactionNewPath[] = {'\\','T','I','N','Y','G','P','T','F','S','\\','T','X','N','.','N','E','W',0};
+static const CHAR16 gTransactionPreviousPath[] = {'\\','T','I','N','Y','G','P','T','F','S','\\','T','X','N','.','P','R','E','V',0};
 static const CHAR16 gBootPath[] = {
     '\\','E','F','I','\\','B','O','O','T','\\','B','O','O','T','A','A','6','4','.','E','F','I',0
 };
@@ -690,7 +731,7 @@ static const CHAR16 gBootStagePath[] = {
     '\\','E','F','I','\\','B','O','O','T','\\','B','O','O','T','A','A','6','4','.','N','E','W',0
 };
 static const CHAR16 gOsMissingPath[] = {'\\','T','I','N','Y','O','S','.','O','F','F',0};
-static const CHAR16 gFactoryInstallPath[] = {'\\','T','I','N','Y','O','S','.','N','E','W',0};
+static const CHAR16 gFactoryInstallPath[] = {'\\','T','I','N','Y','G','P','T','.','N','E','W',0};
 static const CHAR16 gBootOrderPath[] = {'\\','B','O','O','T','O','R','D','.','C','F','G',0};
 static const CHAR16 gPartitionRegistryPath[] = {'\\','P','A','R','T','S','.','C','F','G',0};
 static const CHAR16 gStartupPath[] = {'\\','S','T','A','R','T','U','P','.','N','S','H',0};
@@ -913,6 +954,7 @@ static int storage_init(EFI_HANDLE imageHandle) {
 
 typedef struct {
     UINT64 attribute;
+    UINT64 size;
     CHAR16 name[260];
 } STORAGE_ENTRY;
 
@@ -979,6 +1021,7 @@ static int storage_collect_entries(EFI_FILE_PROTOCOL *directory, STORAGE_ENTRY *
             entryCapacity = newCapacity;
         }
         entries[count].attribute = information->Attribute;
+        entries[count].size = information->FileSize;
         memory_copy(entries[count].name, information->FileName, (nameCharacters + 1) * sizeof(CHAR16));
         count++;
     }
@@ -1146,20 +1189,597 @@ static int storage_clear_os_missing(void) {
     return storage_delete_marker(gOsMissingPath);
 }
 
+static int ascii_case_equal(const char *left, const char *right) {
+    while (*left && *right) {
+        char a = *left++;
+        char b = *right++;
+        if (a >= 'a' && a <= 'z') a = (char)(a - ('a' - 'A'));
+        if (b >= 'a' && b <= 'z') b = (char)(b - ('a' - 'A'));
+        if (a != b) return 0;
+    }
+    return *left == 0 && *right == 0;
+}
+
+static void wide_copy(CHAR16 *destination, const CHAR16 *source, UINTN capacity) {
+    UINTN index = 0;
+    while (index + 1U < capacity && source[index]) {
+        destination[index] = source[index];
+        index++;
+    }
+    destination[index] = 0;
+}
+
+static int wide_append_ascii(CHAR16 *path, const char *text, UINTN capacity) {
+    UINTN used = 0;
+    while (used < capacity && path[used]) used++;
+    while (*text) {
+        UINT8 ch = (UINT8)*text++;
+        if (ch < 32U || ch > 126U || ch == '\\' || used + 1U >= capacity) return 0;
+        path[used++] = (CHAR16)ch;
+    }
+    path[used] = 0;
+    return 1;
+}
+
+static int wide_path_equal(const CHAR16 *left, const CHAR16 *right) {
+    UINTN index;
+    for (index = 0; index < 260U; index++) {
+        if (left[index] != right[index]) return 0;
+        if (!left[index]) return 1;
+    }
+    return 0;
+}
+
+static int storage_direct_node_path_valid(const CHAR16 *path) {
+    UINTN prefix = 0;
+    UINTN index;
+    while (gDirectRootPath[prefix]) {
+        if (prefix >= 259U || path[prefix] != gDirectRootPath[prefix]) return 0;
+        prefix++;
+    }
+    if (path[prefix] != '\\') return 0;
+    index = prefix + 1U;
+    while (index < 260U) {
+        UINTN length = 0;
+        UINTN start = index;
+        while (index < 260U && path[index] && path[index] != '\\') {
+            CHAR16 ch = path[index++];
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                  (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+                  ch == '-' || ch == '+') || ++length >= FS_NAME_BYTES) return 0;
+        }
+        if (!length || (length == 1U && path[start] == '.') ||
+            (length == 2U && path[start] == '.' && path[start + 1U] == '.')) return 0;
+        if (index >= 260U) return 0;
+        if (!path[index]) return 1;
+        index++;
+    }
+    return 0;
+}
+
+static int storage_node_path(UINTN node, CHAR16 path[260]) {
+    UINTN stack[FS_MAX_NODES];
+    UINTN depth = 0;
+    wide_copy(path, gDirectRootPath, 260U);
+    if (node == FS_ROOT) return 1;
+    while (node != FS_ROOT && depth < FS_MAX_NODES) {
+        if (node >= FS_MAX_NODES || !gNodes[node].used) return 0;
+        stack[depth++] = node;
+        node = gNodes[node].parent;
+    }
+    if (node != FS_ROOT) return 0;
+    while (depth) {
+        if (!wide_append_ascii(path, "\\", 260U) ||
+            !wide_append_ascii(path, gNodes[stack[--depth]].name, 260U)) return 0;
+    }
+    return 1;
+}
+
+static int storage_child_path(UINTN parent, const char *name, CHAR16 path[260]) {
+    return storage_node_path(parent, path) && wide_append_ascii(path, "\\", 260U) &&
+        wide_append_ascii(path, name, 260U);
+}
+
+static int storage_create_directory(const CHAR16 *path) {
+    EFI_FILE_PROTOCOL *directory = (EFI_FILE_PROTOCOL *)0;
+    EFI_STATUS status = gVolumeRoot->Open(gVolumeRoot, &directory, (CHAR16 *)path,
+        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, EFI_FILE_DIRECTORY);
+    if (status != EFI_SUCCESS || !directory) return 0;
+    status = directory->Flush(directory);
+    directory->Close(directory);
+    return status == EFI_SUCCESS;
+}
+
+static int storage_read_path(const CHAR16 *path, void *buffer, UINTN capacity, UINTN *bytesOut) {
+    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
+    UINTN bytes = capacity;
+    EFI_STATUS status = gVolumeRoot->Open(gVolumeRoot, &file, (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
+    if (status != EFI_SUCCESS || !file) return 0;
+    status = file->Read(file, &bytes, buffer);
+    file->Close(file);
+    if (status != EFI_SUCCESS) return 0;
+    *bytesOut = bytes;
+    return 1;
+}
+
+static int storage_read_node(UINTN node, char *buffer, UINTN capacity, UINTN *bytesOut) {
+    CHAR16 path[260];
+    UINTN bytes;
+    if (!capacity || !storage_node_path(node, path) || gNodes[node].type != FS_FILE ||
+        gNodes[node].size >= capacity) return 0;
+    if (!storage_read_path(path, buffer, capacity - 1U, &bytes) || bytes != gNodes[node].size) return 0;
+    buffer[bytes] = 0;
+    *bytesOut = bytes;
+    return 1;
+}
+
+static UINT32 storage_hash_path(const CHAR16 *path, int *okay) {
+    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
+    UINT8 buffer[1024];
+    UINT32 hash = 2166136261U;
+    EFI_STATUS status = gVolumeRoot->Open(gVolumeRoot, &file, (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
+    *okay = 0;
+    if (status != EFI_SUCCESS || !file) return 0;
+    for (;;) {
+        UINTN bytes = sizeof(buffer);
+        UINTN index;
+        status = file->Read(file, &bytes, buffer);
+        if (status != EFI_SUCCESS) break;
+        for (index = 0; index < bytes; index++) { hash ^= buffer[index]; hash *= 16777619U; }
+        if (!bytes) { *okay = 1; break; }
+    }
+    file->Close(file);
+    return hash;
+}
+
+static int storage_rename_path(const CHAR16 *oldPath, const CHAR16 *newPath) {
+    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
+    EFI_FILE_INFO *information = (EFI_FILE_INFO *)0;
+    UINTN oldBytes = 0;
+    UINTN newChars = 0;
+    UINTN bytes;
+    EFI_STATUS status = gVolumeRoot->Open(gVolumeRoot, &file, (CHAR16 *)oldPath,
+        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+    if (status != EFI_SUCCESS || !file) return 0;
+    status = file->GetInfo(file, &gFileInfoGuid, &oldBytes, (void *)0);
+    while (newPath[newChars]) newChars++;
+    bytes = EFI_FILE_INFO_NAME_BASE + (newChars + 1U) * sizeof(CHAR16);
+    if (status != EFI_BUFFER_TOO_SMALL || oldBytes < EFI_FILE_INFO_NAME_BASE || bytes < oldBytes) bytes = oldBytes;
+    if (bytes > 65536U || gST->BootServices->AllocatePool(2, bytes, (void **)&information) != EFI_SUCCESS) {
+        file->Close(file); return 0;
+    }
+    status = file->GetInfo(file, &gFileInfoGuid, &oldBytes, information);
+    if (status == EFI_SUCCESS) {
+        UINTN index;
+        information->Size = bytes;
+        for (index = 0; index <= newChars; index++) information->FileName[index] = newPath[index];
+        status = file->SetInfo(file, &gFileInfoGuid, bytes, information);
+        if (status == EFI_SUCCESS) status = file->Flush(file);
+    }
+    gST->BootServices->FreePool(information);
+    file->Close(file);
+    return status == EFI_SUCCESS;
+}
+
+typedef struct {
+    UINT32 magic;
+    UINT32 operation;
+    CHAR16 target[260];
+    CHAR16 temporary[260];
+    CHAR16 previous[260];
+    UINT32 checksum;
+} DIRECT_TRANSACTION;
+#define DIRECT_TXN_MAGIC 0x314e5854U
+#define DIRECT_TXN_REPLACE 1U
+#define DIRECT_TXN_DELETE 2U
+#define DIRECT_TXN_RENAME 3U
+
+static int storage_transaction_valid(const DIRECT_TRANSACTION *transaction) {
+    if (!storage_direct_node_path_valid(transaction->target)) return 0;
+    if (transaction->operation == DIRECT_TXN_REPLACE)
+        return wide_path_equal(transaction->temporary, gTransactionNewPath) &&
+            wide_path_equal(transaction->previous, gTransactionPreviousPath);
+    if (transaction->operation == DIRECT_TXN_DELETE)
+        return !transaction->temporary[0] &&
+            wide_path_equal(transaction->previous, gTransactionPreviousPath);
+    if (transaction->operation == DIRECT_TXN_RENAME)
+        return !transaction->temporary[0] &&
+            storage_direct_node_path_valid(transaction->previous);
+    return 0;
+}
+
+static int storage_write_exact(const CHAR16 *path, const void *data, UINTN length) {
+    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
+    UINTN removed = 0, failures = 0, bytes = length;
+    EFI_STATUS status;
+    storage_delete_path(path, &removed, &failures);
+    if (failures) return 0;
+    status = gVolumeRoot->Open(gVolumeRoot, &file, (CHAR16 *)path,
+        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0);
+    if (status != EFI_SUCCESS || !file) return 0;
+    status = file->SetPosition(file, 0);
+    if (status == EFI_SUCCESS) status = file->Write(file, &bytes, (void *)data);
+    if (status == EFI_SUCCESS && bytes == length) status = file->Flush(file);
+    file->Close(file);
+    return status == EFI_SUCCESS && bytes == length;
+}
+
+static int storage_read_transaction(const CHAR16 *path, DIRECT_TRANSACTION *transaction) {
+    UINTN bytes = 0;
+    UINT32 checksum;
+    if (!storage_read_path(path, transaction, sizeof(*transaction), &bytes) ||
+        bytes != sizeof(*transaction) || transaction->magic != DIRECT_TXN_MAGIC) return 0;
+    checksum = transaction->checksum;
+    transaction->checksum = 0;
+    return checksum == hash_bytes(transaction, sizeof(*transaction)) &&
+        storage_transaction_valid(transaction);
+}
+
+static int storage_transaction_pending(void) {
+    return storage_path_exists(gTransactionPath) || storage_path_exists(gTransactionBackupPath);
+}
+
+static int storage_write_transaction(const DIRECT_TRANSACTION *transaction) {
+    DIRECT_TRANSACTION copy = *transaction;
+    copy.checksum = 0;
+    copy.checksum = hash_bytes(&copy, sizeof(copy));
+    /* The redundant manifest recovers a torn committed TXN.CMT. */
+    return storage_write_exact(gTransactionBackupPath, &copy, sizeof(copy)) &&
+        storage_write_exact(gTransactionPath, &copy, sizeof(copy));
+}
+
+static void storage_recover_transaction(void) {
+    DIRECT_TRANSACTION transaction;
+    UINTN removed = 0, failures = 0;
+    gTransactionCorrupt = 0;
+    int committed = storage_path_exists(gTransactionPath);
+    int valid = committed && storage_read_transaction(gTransactionPath, &transaction);
+    if (!committed) {
+        /* A lone backup was staged before commit; no authoritative path was changed. */
+        storage_delete_path(gTransactionNewPath, &removed, &failures);
+        storage_delete_path(gTransactionBackupPath, &removed, &failures);
+        return;
+    }
+    if (!valid) valid = storage_read_transaction(gTransactionBackupPath, &transaction);
+    if (!valid) {
+        /* With no moved payload there is no recovery action to infer safely. */
+        if (!storage_path_exists(gTransactionNewPath) &&
+            !storage_path_exists(gTransactionPreviousPath)) {
+            storage_delete_path(gTransactionPath, &removed, &failures);
+            storage_delete_path(gTransactionBackupPath, &removed, &failures);
+        }
+        gTransactionCorrupt = (UINT8)storage_transaction_pending();
+        return;
+    }
+    if (transaction.operation == DIRECT_TXN_REPLACE) {
+        int authoritative = storage_path_exists(transaction.target);
+        if (!authoritative && storage_path_exists(transaction.temporary))
+            authoritative = storage_rename_path(transaction.temporary, transaction.target);
+        if (!authoritative && storage_path_exists(transaction.previous))
+            authoritative = storage_rename_path(transaction.previous, transaction.target);
+        if (!authoritative) failures++;
+        else {
+            storage_delete_path(transaction.temporary, &removed, &failures);
+            storage_delete_path(transaction.previous, &removed, &failures);
+        }
+    } else if (transaction.operation == DIRECT_TXN_DELETE) {
+        EFI_FILE_PROTOCOL *old = (EFI_FILE_PROTOCOL *)0;
+        if (storage_open_for_delete(gVolumeRoot, transaction.previous, &old) == EFI_SUCCESS && old) {
+            if (old->Delete(old) != EFI_SUCCESS) {
+                old = (EFI_FILE_PROTOCOL *)0;
+                if (storage_open_for_delete(gVolumeRoot, transaction.previous, &old) != EFI_SUCCESS || !old)
+                    failures++;
+                else {
+                    storage_wipe_directory(old, 99U, &removed, &failures);
+                    if (old->Delete(old) != EFI_SUCCESS) failures++;
+                }
+            }
+        }
+    } else if (transaction.operation == DIRECT_TXN_RENAME) {
+        if (!storage_path_exists(transaction.target) &&
+            (!storage_path_exists(transaction.previous) ||
+             !storage_rename_path(transaction.previous, transaction.target))) failures++;
+    } else failures++;
+    if (!failures && storage_delete_marker(gTransactionPath))
+        (void)storage_delete_marker(gTransactionBackupPath);
+}
+
+static int storage_replace_file(UINTN parent, const char *name, const void *data, UINTN length) {
+    DIRECT_TRANSACTION transaction;
+    UINTN removed = 0, failures = 0;
+    int hadOld;
+    int verified = 0;
+    if (storage_transaction_pending()) return 0;
+    memory_zero(&transaction, sizeof(transaction));
+    transaction.magic = DIRECT_TXN_MAGIC;
+    transaction.operation = DIRECT_TXN_REPLACE;
+    if (!storage_child_path(parent, name, transaction.target)) return 0;
+    wide_copy(transaction.temporary, gTransactionNewPath, 260U);
+    wide_copy(transaction.previous, gTransactionPreviousPath, 260U);
+    storage_delete_path(transaction.temporary, &removed, &failures);
+    storage_delete_path(transaction.previous, &removed, &failures);
+    if (failures || !storage_write_exact(transaction.temporary, data, length) ||
+        storage_hash_path(transaction.temporary, &verified) != hash_bytes(data, length) ||
+        !verified || !storage_write_transaction(&transaction)) return 0;
+    hadOld = storage_path_exists(transaction.target);
+    if (hadOld && !storage_rename_path(transaction.target, transaction.previous)) return 0;
+    if (!storage_rename_path(transaction.temporary, transaction.target)) {
+        if (hadOld) (void)storage_rename_path(transaction.previous, transaction.target);
+        return 0;
+    }
+    if (gVolumeRoot->Flush(gVolumeRoot) != EFI_SUCCESS) return 0;
+    storage_delete_path(transaction.previous, &removed, &failures);
+    if (failures || !storage_delete_marker(gTransactionPath) ||
+        !storage_delete_marker(gTransactionBackupPath)) return 0;
+    return 1;
+}
+
+static int storage_delete_node(UINTN node) {
+    DIRECT_TRANSACTION transaction;
+    EFI_FILE_PROTOCOL *old = (EFI_FILE_PROTOCOL *)0;
+    UINTN removed = 0, failures = 0;
+    if (storage_transaction_pending()) return 0;
+    memory_zero(&transaction, sizeof(transaction));
+    transaction.magic = DIRECT_TXN_MAGIC;
+    transaction.operation = DIRECT_TXN_DELETE;
+    if (!storage_node_path(node, transaction.target)) return 0;
+    wide_copy(transaction.previous, gTransactionPreviousPath, 260U);
+    if (!storage_write_transaction(&transaction) ||
+        !storage_rename_path(transaction.target, transaction.previous)) return 0;
+    if (storage_open_for_delete(gVolumeRoot, transaction.previous, &old) != EFI_SUCCESS || !old) return 0;
+    if (gNodes[node].type == FS_DIRECTORY)
+        storage_wipe_directory(old, 99U, &removed, &failures);
+    if (old->Delete(old) != EFI_SUCCESS) failures++;
+    if (failures || !storage_delete_marker(gTransactionPath) ||
+        !storage_delete_marker(gTransactionBackupPath)) return 0;
+    return 1;
+}
+
+static int storage_rename_node(UINTN node, UINTN parent, const char *name) {
+    DIRECT_TRANSACTION transaction;
+    if (storage_transaction_pending()) return 0;
+    memory_zero(&transaction, sizeof(transaction));
+    transaction.magic = DIRECT_TXN_MAGIC;
+    transaction.operation = DIRECT_TXN_RENAME;
+    if (!storage_node_path(node, transaction.previous) ||
+        !storage_child_path(parent, name, transaction.target) ||
+        !storage_write_transaction(&transaction) ||
+        !storage_rename_path(transaction.previous, transaction.target)) return 0;
+    if (gVolumeRoot->Flush(gVolumeRoot) != EFI_SUCCESS ||
+        !storage_delete_marker(gTransactionPath) ||
+        !storage_delete_marker(gTransactionBackupPath)) return 0;
+    return 1;
+}
+
+static int storage_control_marker_valid(const CHAR16 *path, UINT32 magic) {
+    DIRECT_FS_MARKER marker;
+    UINTN bytes = 0;
+    UINT32 checksum;
+    if (!storage_read_path(path, &marker, sizeof(marker), &bytes) ||
+        bytes != sizeof(marker) || marker.magic != magic ||
+        marker.version != DIRECT_FS_MARKER_VERSION) return 0;
+    checksum = marker.checksum;
+    marker.checksum = 0;
+    return checksum == hash_bytes(&marker, sizeof(marker));
+}
+
+static int storage_marker_valid(void) {
+    return storage_control_marker_valid(gDirectMarkerPath, DIRECT_FS_MARKER_MAGIC);
+}
+
+static int storage_retirement_valid(void) {
+    return storage_control_marker_valid(gLegacyRetiredPath, LEGACY_RETIRE_MARKER_MAGIC);
+}
+
+static int storage_write_control_marker(const CHAR16 *path, UINT32 magic, UINT64 generation) {
+    DIRECT_FS_MARKER marker;
+    memory_zero(&marker, sizeof(marker));
+    marker.magic = magic;
+    marker.version = DIRECT_FS_MARKER_VERSION;
+    marker.generation = generation;
+    marker.checksum = 0;
+    marker.checksum = hash_bytes(&marker, sizeof(marker));
+    return storage_write_exact(path, &marker, sizeof(marker));
+}
+
+static int storage_write_marker(void) {
+    return storage_write_control_marker(gDirectMarkerPath, DIRECT_FS_MARKER_MAGIC, ++gGeneration);
+}
+
+static int storage_write_retirement_marker(void) {
+    return storage_write_control_marker(gLegacyRetiredPath, LEGACY_RETIRE_MARKER_MAGIC, gGeneration);
+}
+
+static int fs_valid_name(const char *name);
+
+static int storage_scan_directory(EFI_FILE_PROTOCOL *directory, UINTN parent, UINTN depth) {
+    STORAGE_ENTRY *entries = (STORAGE_ENTRY *)0;
+    UINTN count = 0, index;
+    if (depth > 12U || !storage_collect_entries(directory, &entries, &count)) return 0;
+    for (index = 0; index < count; index++) {
+        EFI_FILE_PROTOCOL *child = (EFI_FILE_PROTOCOL *)0;
+        UINTN node, character;
+        char name[FS_NAME_BYTES];
+        int okay = 0;
+        for (character = 0; character + 1U < sizeof(name) && entries[index].name[character]; character++) {
+            if (entries[index].name[character] > 127U) break;
+            name[character] = (char)entries[index].name[character];
+        }
+        name[character] = 0;
+        if (entries[index].name[character] || !fs_valid_name(name)) goto failure;
+        for (node = 1U; node < FS_MAX_NODES && gNodes[node].used; node++) {
+            if (gNodes[node].parent == parent && ascii_case_equal(gNodes[node].name, name)) goto failure;
+        }
+        if (node >= FS_MAX_NODES ||
+            (!(entries[index].attribute & EFI_FILE_DIRECTORY) &&
+             entries[index].size >= FS_DATA_BYTES)) goto failure;
+        gNodes[node].used = 1;
+        gNodes[node].type = (entries[index].attribute & EFI_FILE_DIRECTORY) ? FS_DIRECTORY : FS_FILE;
+        gNodes[node].flags = (parent == FS_ROOT &&
+            (ascii_case_equal(name, "system") || ascii_case_equal(name, "apps") ||
+             ascii_case_equal(name, "lost+found"))) ? FS_PROTECTED :
+            (parent == FS_ROOT ? 0U : gNodes[parent].flags);
+        gNodes[node].parent = parent;
+        gNodes[node].size = gNodes[node].type == FS_FILE ? (UINTN)entries[index].size : 0U;
+        string_copy(gNodes[node].name, name, sizeof(gNodes[node].name));
+        if (gNodes[node].type == FS_DIRECTORY) {
+            if (directory->Open(directory, &child, entries[index].name, EFI_FILE_MODE_READ, 0) != EFI_SUCCESS ||
+                !child || !storage_scan_directory(child, node, depth + 1U)) {
+                if (child) child->Close(child);
+                goto failure;
+            }
+            child->Close(child);
+            gNodes[node].checksum = 0;
+        } else {
+            CHAR16 path[260];
+            if (!storage_node_path(node, path)) goto failure;
+            gNodes[node].checksum = storage_hash_path(path, &okay);
+            if (!okay) goto failure;
+        }
+    }
+    if (entries) gST->BootServices->FreePool(entries);
+    return 1;
+failure:
+    if (entries) gST->BootServices->FreePool(entries);
+    return 0;
+}
+
+static int storage_scan_direct(void) {
+    EFI_FILE_PROTOCOL *root = (EFI_FILE_PROTOCOL *)0;
+    memory_zero(gNodes, sizeof(gNodes));
+    gNodes[FS_ROOT].used = 1;
+    gNodes[FS_ROOT].type = FS_DIRECTORY;
+    gNodes[FS_ROOT].flags = FS_PROTECTED;
+    gNodes[FS_ROOT].parent = FS_ROOT;
+    if (gVolumeRoot->Open(gVolumeRoot, &root, (CHAR16 *)gDirectRootPath, EFI_FILE_MODE_READ, 0) != EFI_SUCCESS || !root)
+        return 0;
+    if (!storage_scan_directory(root, FS_ROOT, 0)) { root->Close(root); return 0; }
+    root->Close(root);
+    if (gCwd >= FS_MAX_NODES || !gNodes[gCwd].used || gNodes[gCwd].type != FS_DIRECTORY) gCwd = FS_ROOT;
+    if (gPreviousCwd >= FS_MAX_NODES || !gNodes[gPreviousCwd].used ||
+        gNodes[gPreviousCwd].type != FS_DIRECTORY) gPreviousCwd = FS_ROOT;
+    return 1;
+}
+
+static UINT32 legacy_node_checksum(const LEGACY_FS_NODE *node) {
+    UINT32 hash = 2166136261U;
+    UINTN index;
+    const UINT8 metadata[] = {node->used, node->type, node->flags};
+    for (index = 0; index < sizeof(metadata); index++) { hash ^= metadata[index]; hash *= 16777619U; }
+    for (index = 0; index < sizeof(node->parent); index++) { hash ^= (UINT8)(node->parent >> (index * 8)); hash *= 16777619U; }
+    for (index = 0; index < sizeof(node->size); index++) { hash ^= (UINT8)(node->size >> (index * 8)); hash *= 16777619U; }
+    for (index = 0; index < FS_NAME_BYTES && node->name[index]; index++) { hash ^= (UINT8)node->name[index]; hash *= 16777619U; }
+    if (node->type == FS_FILE) for (index = 0; index < node->size; index++) { hash ^= (UINT8)node->data[index]; hash *= 16777619U; }
+    return hash;
+}
+
+static int storage_validate_legacy(LEGACY_FS_NODE *nodes) {
+    UINTN index;
+    if (!nodes[0].used || nodes[0].type != FS_DIRECTORY || nodes[0].parent != FS_ROOT) return 0;
+    for (index = 0; index < FS_MAX_NODES; index++) if (nodes[index].used) {
+        UINTN other, cursor = index, steps = 0;
+        if ((index && !fs_valid_name(nodes[index].name)) || nodes[index].parent >= FS_MAX_NODES ||
+            !nodes[nodes[index].parent].used || nodes[nodes[index].parent].type != FS_DIRECTORY ||
+            (nodes[index].type != FS_FILE && nodes[index].type != FS_DIRECTORY) ||
+            (nodes[index].type == FS_FILE && nodes[index].size >= FS_DATA_BYTES) ||
+            nodes[index].checksum != legacy_node_checksum(&nodes[index])) return 0;
+        while (cursor != FS_ROOT && steps++ < FS_MAX_NODES) cursor = nodes[cursor].parent;
+        if (cursor != FS_ROOT || steps >= FS_MAX_NODES) return 0;
+        for (other = 1; other < index; other++) if (nodes[other].used &&
+            nodes[other].parent == nodes[index].parent && ascii_case_equal(nodes[other].name, nodes[index].name)) return 0;
+    }
+    return 1;
+}
+
+static int storage_read_legacy_slot(UINTN slot, LEGACY_FS_NODE *output, UINT64 *generation) {
+    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
+    FS_IMAGE_HEADER header;
+    UINTN bytes;
+    EFI_STATUS status;
+    CHAR16 *path = (CHAR16 *)(slot ? gSlot1Path : gSlot0Path);
+    status = gVolumeRoot->Open(gVolumeRoot, &file, path, EFI_FILE_MODE_READ, 0);
+    if (status != EFI_SUCCESS || !file) return 0;
+    bytes = sizeof(header); status = file->Read(file, &bytes, &header);
+    if (status != EFI_SUCCESS || bytes != sizeof(header) || header.magic != FS_IMAGE_MAGIC ||
+        header.version != FS_IMAGE_VERSION || header.nodeCount != FS_MAX_NODES ||
+        header.payloadBytes != sizeof(LEGACY_FS_NODE) * FS_MAX_NODES) { file->Close(file); return 0; }
+    bytes = sizeof(LEGACY_FS_NODE) * FS_MAX_NODES;
+    status = file->Read(file, &bytes, output); file->Close(file);
+    if (status != EFI_SUCCESS || bytes != sizeof(LEGACY_FS_NODE) * FS_MAX_NODES ||
+        hash_bytes(output, bytes) != header.payloadChecksum || !storage_validate_legacy(output)) return 0;
+    *generation = header.generation;
+    return 1;
+}
+
+static int storage_import_legacy(void) {
+    LEGACY_FS_NODE *nodes = (LEGACY_FS_NODE *)0;
+    UINT64 generations[2] = {0, 0};
+    int valid[2] = {0, 0};
+    UINTN best, index, removed = 0, failures = 0;
+    if (storage_retirement_valid()) return 0;
+    if (gST->BootServices->AllocatePool(2, sizeof(LEGACY_FS_NODE) * FS_MAX_NODES, (void **)&nodes) != EFI_SUCCESS) return 0;
+    valid[0] = storage_read_legacy_slot(0, nodes, &generations[0]);
+    valid[1] = storage_read_legacy_slot(1, nodes, &generations[1]);
+    if (!valid[0] && !valid[1]) { gST->BootServices->FreePool(nodes); return 0; }
+    best = valid[1] && (!valid[0] || generations[1] > generations[0]) ? 1U : 0U;
+    if (!storage_read_legacy_slot(best, nodes, &gGeneration)) goto failure;
+    {
+        EFI_FILE_PROTOCOL *partial = (EFI_FILE_PROTOCOL *)0;
+        if (storage_open_for_delete(gVolumeRoot, (CHAR16 *)gDirectNamespacePath, &partial) == EFI_SUCCESS && partial) {
+            storage_wipe_directory(partial, 99U, &removed, &failures);
+            if (partial->Delete(partial) != EFI_SUCCESS) failures++;
+        }
+    }
+    if (failures || !storage_create_directory(gDirectNamespacePath) ||
+        !storage_create_directory(gDirectRootPath)) goto failure;
+    for (index = 1; index < FS_MAX_NODES; index++) if (nodes[index].used) {
+        CHAR16 path[260]; UINTN stack[FS_MAX_NODES], depth = 0, cursor = index;
+        wide_copy(path, gDirectRootPath, 260U);
+        while (cursor != FS_ROOT && depth < FS_MAX_NODES) { stack[depth++] = cursor; cursor = nodes[cursor].parent; }
+        while (depth) { if (!wide_append_ascii(path, "\\", 260U) || !wide_append_ascii(path, nodes[stack[--depth]].name, 260U)) goto failure; }
+        if (nodes[index].type == FS_DIRECTORY) { if (!storage_create_directory(path)) goto failure; }
+        else {
+            int verified = 0;
+            if (!storage_write_exact(path, nodes[index].data, nodes[index].size) ||
+                storage_hash_path(path, &verified) != hash_bytes(nodes[index].data, nodes[index].size) ||
+                !verified) goto failure;
+        }
+    }
+    if (!storage_write_marker() || !storage_scan_direct() ||
+        !storage_write_retirement_marker()) goto failure;
+    storage_delete_path(gSlot0Path, &removed, &failures);
+    storage_delete_path(gSlot1Path, &removed, &failures);
+    /* A verified direct marker is authority even if firmware cannot remove stale import sources. */
+    gST->BootServices->FreePool(nodes);
+    return 1;
+failure:
+    /* Legacy snapshots remain authoritative unless marker commit and verification completed. */
+    storage_delete_marker(gDirectMarkerPath);
+    gST->BootServices->FreePool(nodes);
+    return 0;
+}
+
 static int storage_os_missing(void) {
     if (!gStorageReady || storage_path_exists(gOsMissingPath)) return 1;
-    return !storage_path_exists(gSlot0Path) && !storage_path_exists(gSlot1Path) &&
-        !storage_path_exists(gFactoryInstallPath);
+    if (storage_retirement_valid() && !storage_marker_valid()) return 1;
+    return !storage_marker_valid() && !storage_path_exists(gSlot0Path) &&
+        !storage_path_exists(gSlot1Path) && !storage_path_exists(gFactoryInstallPath);
 }
 
 static int storage_wipe_owned_files(UINTN *removed, UINTN *failures) {
     CHAR16 savePath[] = {'\\','D','O','O','M','S','A','V','0','.','D','S','G',0};
+    EFI_FILE_PROTOCOL *direct = (EFI_FILE_PROTOCOL *)0;
     UINTN index;
+    if (storage_open_for_delete(gVolumeRoot, (CHAR16 *)gDirectNamespacePath, &direct) == EFI_SUCCESS && direct) {
+        storage_wipe_directory(direct, 99U, removed, failures);
+        if (direct->Delete(direct) == EFI_SUCCESS) (*removed)++; else (*failures)++;
+    }
     storage_delete_path(gSlot0Path, removed, failures);
     storage_delete_path(gSlot1Path, removed, failures);
+    storage_delete_path(gLegacyRetiredPath, removed, failures);
     storage_delete_path(gDoomWadPath, removed, failures);
     storage_delete_path(gDoomConfigPath, removed, failures);
-    for (index = 0; index < 10; index++) {
+    for (index = 0; index < 10U; index++) {
         savePath[8] = (CHAR16)('0' + index);
         storage_delete_path(savePath, removed, failures);
     }
@@ -1172,79 +1792,27 @@ static int storage_wipe_owned_files(UINTN *removed, UINTN *failures) {
 }
 
 static int storage_wipe_os(UINTN *removed, UINTN *failures) {
-    int complete;
     STORAGE_ENTRY *remaining = (STORAGE_ENTRY *)0;
     UINTN remainingCount = 0;
-    *removed = 0;
-    *failures = 0;
+    int complete;
+    *removed = 0; *failures = 0;
     if (!gVolumeRoot) return 0;
-    if (!gLegacySinglePartition) {
-        complete = storage_wipe_directory(gVolumeRoot, 99U, removed, failures);
-        if (!storage_collect_entries(gVolumeRoot, &remaining, &remainingCount)) {
-            (*failures)++;
-            complete = 0;
-        } else if (remainingCount) {
-            (*failures) += remainingCount;
-            complete = 0;
-        }
-        if (remaining) gST->BootServices->FreePool(remaining);
-        return complete && *failures == 0;
-    }
-    if (!gDedicatedStorage) return storage_wipe_owned_files(removed, failures);
-    complete = storage_wipe_directory(gVolumeRoot, 0, removed, failures);
-    if (!storage_set_os_missing()) {
-        (*failures)++;
-        complete = 0;
-    }
-    return complete && *failures == 0 &&
-        storage_path_exists(gBootPath) && storage_path_exists(gOsMissingPath);
-}
-
-static int storage_read_slot(UINTN slot, FS_NODE *output, UINT64 *generation) {
-    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
-    FS_IMAGE_HEADER header;
-    UINTN bytes;
-    EFI_STATUS status;
-    CHAR16 *path = (CHAR16 *)(slot ? gSlot1Path : gSlot0Path);
-    if (!gStorageReady) return 0;
-    status = gVolumeRoot->Open(gVolumeRoot, &file, path, EFI_FILE_MODE_READ, 0);
-    if (status != EFI_SUCCESS || !file) return 0;
-    bytes = sizeof(header);
-    status = file->Read(file, &bytes, &header);
-    if (status != EFI_SUCCESS || bytes != sizeof(header) || header.magic != FS_IMAGE_MAGIC ||
-        header.version != FS_IMAGE_VERSION || header.nodeCount != FS_MAX_NODES ||
-        header.payloadBytes != sizeof(gNodes)) {
-        file->Close(file);
-        return 0;
-    }
-    bytes = sizeof(gNodes);
-    status = file->Read(file, &bytes, output);
-    file->Close(file);
-    if (status != EFI_SUCCESS || bytes != sizeof(gNodes)) return 0;
-    if (hash_bytes(output, sizeof(gNodes)) != header.payloadChecksum) return 0;
-    *generation = header.generation;
-    return 1;
-}
-
-static void storage_probe_slots(void) {
-    UINTN slot;
-    for (slot = 0; slot < 2; slot++) {
-        UINT64 generation = 0;
-        gSlotValid[slot] = (UINT8)storage_read_slot(slot, gLoadBuffer, &generation);
-        gSlotGeneration[slot] = gSlotValid[slot] ? generation : 0;
-    }
+    if (gLegacySinglePartition) return storage_wipe_owned_files(removed, failures);
+    complete = storage_wipe_directory(gVolumeRoot, 99U, removed, failures);
+    if (!storage_collect_entries(gVolumeRoot, &remaining, &remainingCount)) { (*failures)++; complete = 0; }
+    else if (remainingCount) { (*failures) += remainingCount; complete = 0; }
+    if (remaining) gST->BootServices->FreePool(remaining);
+    return complete && *failures == 0;
 }
 
 static int storage_mount_latest(void) {
-    UINTN slot;
-    UINTN best = 2;
-    storage_probe_slots();
-    for (slot = 0; slot < 2; slot++) {
-        if (gSlotValid[slot] && (best == 2 || gSlotGeneration[slot] > gSlotGeneration[best])) best = slot;
+    if (storage_marker_valid()) {
+        if (!storage_retirement_valid() && !storage_write_retirement_marker()) return 0;
+        storage_recover_transaction();
+        return storage_scan_direct();
     }
-    if (best == 2 || !storage_read_slot(best, gLoadBuffer, &gGeneration)) return 0;
-    memory_copy(gNodes, gLoadBuffer, sizeof(gNodes));
-    return 1;
+    if (storage_retirement_valid()) return 0;
+    return storage_import_legacy();
 }
 
 static int storage_activate_partition(UINTN partition) {
@@ -1255,57 +1823,20 @@ static int storage_activate_partition(UINTN partition) {
     gCwd = FS_ROOT;
     gPreviousCwd = FS_ROOT;
     gGeneration = 0;
-    memory_zero(gSlotValid, sizeof(gSlotValid));
-    memory_zero(gSlotGeneration, sizeof(gSlotGeneration));
+    gTransactionCorrupt = 0;
+    memory_zero(gNodes, sizeof(gNodes));
     return 1;
 }
 
-static int storage_sync(void) {
-    EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
-    FS_IMAGE_HEADER header;
-    UINTN bytes;
-    UINTN slot;
-    EFI_STATUS status;
-    CHAR16 *path;
-    if (!gStorageReady) return 0;
-    gGeneration++;
-    slot = (UINTN)(gGeneration & 1ULL);
-    path = (CHAR16 *)(slot ? gSlot1Path : gSlot0Path);
-    header.magic = FS_IMAGE_MAGIC;
-    header.version = FS_IMAGE_VERSION;
-    header.nodeCount = FS_MAX_NODES;
-    header.generation = gGeneration;
-    header.payloadBytes = sizeof(gNodes);
-    header.payloadChecksum = hash_bytes(gNodes, sizeof(gNodes));
-    header.reserved = 0;
-    status = gVolumeRoot->Open(gVolumeRoot, &file, path,
-        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0);
-    if (status != EFI_SUCCESS || !file) return 0;
-    file->SetPosition(file, 0);
-    bytes = sizeof(header);
-    status = file->Write(file, &bytes, &header);
-    if (status == EFI_SUCCESS && bytes == sizeof(header)) {
-        bytes = sizeof(gNodes);
-        status = file->Write(file, &bytes, gNodes);
-    }
-    if (status == EFI_SUCCESS) file->Flush(file);
-    file->Close(file);
-    if (status != EFI_SUCCESS || bytes != sizeof(gNodes)) return 0;
-    storage_probe_slots();
-    return 1;
+static int storage_install_empty(void) {
+    if (!storage_create_directory(gDirectNamespacePath) || !storage_create_directory(gDirectRootPath) ||
+        !storage_write_marker() || !storage_write_retirement_marker()) return 0;
+    return storage_scan_direct();
 }
 
 static int storage_rollback(void) {
-    UINTN older;
-    UINT64 loadedGeneration;
-    storage_probe_slots();
-    if (!gSlotValid[0] || !gSlotValid[1]) return 0;
-    older = gSlotGeneration[0] < gSlotGeneration[1] ? 0 : 1;
-    if (!storage_read_slot(older, gLoadBuffer, &loadedGeneration)) return 0;
-    memory_copy(gNodes, gLoadBuffer, sizeof(gNodes));
-    gGeneration = gSlotGeneration[0] > gSlotGeneration[1] ? gSlotGeneration[0] : gSlotGeneration[1];
-    gCwd = FS_ROOT;
-    return 1;
+    /* Whole-filesystem snapshot rollback was retired with direct FAT authority. */
+    return 0;
 }
 
 static UINT32 fs_node_checksum(const FS_NODE *node) {
@@ -1328,18 +1859,11 @@ static UINT32 fs_node_checksum(const FS_NODE *node) {
         hash ^= (UINT8)node->name[index];
         hash *= 16777619U;
     }
-    if (node->type == FS_FILE) {
-        UINTN size = node->size < FS_DATA_BYTES ? node->size : FS_DATA_BYTES;
-        for (index = 0; index < size; index++) {
-            hash ^= (UINT8)node->data[index];
-            hash *= 16777619U;
-        }
-    }
     return hash;
 }
 
 static void fs_update(UINTN node) {
-    gNodes[node].checksum = fs_node_checksum(&gNodes[node]);
+    if (gNodes[node].type == FS_DIRECTORY) gNodes[node].checksum = fs_node_checksum(&gNodes[node]);
 }
 
 static int fs_valid_name(const char *name) {
@@ -1357,68 +1881,77 @@ static int fs_valid_name(const char *name) {
 static int fs_find_child(UINTN parent, const char *name) {
     UINTN index;
     for (index = 1; index < FS_MAX_NODES; index++) {
-        if (gNodes[index].used && gNodes[index].parent == parent && streq(gNodes[index].name, name)) return (int)index;
+        if (gNodes[index].used && gNodes[index].parent == parent && ascii_case_equal(gNodes[index].name, name)) return (int)index;
     }
     return -1;
 }
 
 static int fs_alloc(UINT8 type, UINTN parent, const char *name, UINT8 flags) {
     UINTN index;
-    if (parent >= FS_MAX_NODES || !gNodes[parent].used || gNodes[parent].type != FS_DIRECTORY ||
-        !fs_valid_name(name) || fs_find_child(parent, name) >= 0) return -1;
-    for (index = 1; index < FS_MAX_NODES; index++) {
-        if (!gNodes[index].used) {
-            memory_zero(&gNodes[index], sizeof(FS_NODE));
-            gNodes[index].used = 1;
-            gNodes[index].type = type;
-            gNodes[index].flags = flags;
-            gNodes[index].parent = parent;
-            string_copy(gNodes[index].name, name, FS_NAME_BYTES);
-            fs_update(index);
-            return (int)index;
-        }
-    }
-    return -1;
+    CHAR16 path[260];
+    if (!gStorageReady || parent >= FS_MAX_NODES || !gNodes[parent].used ||
+        gNodes[parent].type != FS_DIRECTORY || !fs_valid_name(name) ||
+        fs_find_child(parent, name) >= 0 || !storage_child_path(parent, name, path)) return -1;
+    for (index = 1; index < FS_MAX_NODES; index++) if (!gNodes[index].used) break;
+    if (index >= FS_MAX_NODES) return -1;
+    if (type == FS_DIRECTORY) {
+        if (!storage_create_directory(path)) { gPersistenceFailure = 1; return -1; }
+    } else if (!storage_replace_file(parent, name, "", 0)) { gPersistenceFailure = 1; return -1; }
+    memory_zero(&gNodes[index], sizeof(FS_NODE));
+    gNodes[index].used = 1;
+    gNodes[index].type = type;
+    gNodes[index].flags = flags | (parent == FS_ROOT ? 0U : gNodes[parent].flags);
+    gNodes[index].parent = parent;
+    string_copy(gNodes[index].name, name, FS_NAME_BYTES);
+    fs_update(index);
+    return (int)index;
 }
 
-static void fs_set_file(UINTN node, const char *data) {
-    UINTN length = string_length(data);
-    if (length >= FS_DATA_BYTES) length = FS_DATA_BYTES - 1;
-    memory_zero(gNodes[node].data, FS_DATA_BYTES);
-    memory_copy(gNodes[node].data, data, length);
+static int fs_write_file(UINTN node, const void *data, UINTN length) {
+    if (node >= FS_MAX_NODES || !gNodes[node].used || gNodes[node].type != FS_FILE || length >= FS_DATA_BYTES) return 0;
+    if (!storage_replace_file(gNodes[node].parent, gNodes[node].name, data, length)) {
+        gPersistenceFailure = 1;
+        return 0;
+    }
     gNodes[node].size = length;
-    fs_update(node);
+    gNodes[node].checksum = hash_bytes(data, length);
+    return 1;
+}
+
+static int fs_set_file(UINTN node, const char *data) {
+    UINTN length = string_length(data);
+    if (length >= FS_DATA_BYTES) length = FS_DATA_BYTES - 1U;
+    return fs_write_file(node, data, length);
 }
 
 static int fs_ensure_dir(UINTN parent, const char *name, UINT8 flags) {
     int node = fs_find_child(parent, name);
-    if (node >= 0 && gNodes[node].type != FS_DIRECTORY) {
-        gNodes[node].used = 0;
-        node = -1;
-    }
+    if (node >= 0 && gNodes[node].type != FS_DIRECTORY) return -1;
     if (node < 0) node = fs_alloc(FS_DIRECTORY, parent, name, flags);
-    if (node >= 0) {
-        gNodes[node].flags |= flags;
-        fs_update((UINTN)node);
-    }
+    if (node >= 0) gNodes[node].flags |= flags;
     return node;
 }
 
 static int fs_ensure_file(UINTN parent, const char *name, const char *data, UINT8 flags) {
     int node = fs_find_child(parent, name);
-    if (node >= 0 && gNodes[node].type != FS_FILE) {
-        gNodes[node].used = 0;
-        node = -1;
-    }
-    if (node < 0) node = fs_alloc(FS_FILE, parent, name, flags);
+    UINTN length = string_length(data);
     if (node >= 0) {
+        UINTN existingLength = 0;
+        if (gNodes[node].type != FS_FILE) return -1;
         gNodes[node].flags |= flags;
-        fs_set_file((UINTN)node, data);
+        if ((flags & FS_PROTECTED) &&
+            (!storage_read_node((UINTN)node, gFileBuffer, sizeof(gFileBuffer), &existingLength) ||
+             existingLength != length || !memory_equal(gFileBuffer, data, length))) {
+            if (!fs_write_file((UINTN)node, data, length)) return -1;
+        }
+        return node;
     }
+    node = fs_alloc(FS_FILE, parent, name, flags);
+    if (node >= 0 && !fs_set_file((UINTN)node, data)) return -1;
     return node;
 }
 
-static void fs_remove_recursive(UINTN node);
+static int fs_remove_recursive(UINTN node);
 static int fs_is_ancestor(UINTN ancestor, UINTN node);
 
 static int fs_remove_legacy_manager_trees(void) {
@@ -1478,9 +2011,9 @@ static int fs_restore_system(void) {
         runtime = fs_ensure_dir((UINTN)system, "runtime", FS_PROTECTED);
         security = fs_ensure_dir((UINTN)system, "security", FS_PROTECTED);
         fs_ensure_file((UINTN)system, "version.txt",
-            "TinyGPT " TINYGPT_DISPLAY_VERSION "\narchitecture=ARM64\nfirmware=UEFI\nkernel=freestanding\nfilesystem=MiniFS2\nunix=no", FS_PROTECTED);
+            "TinyGPT " TINYGPT_DISPLAY_VERSION "\narchitecture=ARM64\nfirmware=UEFI\nkernel=freestanding\nfilesystem=direct FAT entries\nunix=no", FS_PROTECTED);
         fs_ensure_file((UINTN)system, "manifest.txt",
-            "Critical tree:\n/system/boot       loader and pre-OS handoff records\n/system/kernel     core, ABI, and memory records\n/system/firmware   UEFI interface records\n/system/config     boot and shell policy\n/system/drivers    hardware service records\n/system/runtime    MiniFS2 runtime records\n/system/security   integrity and protected paths\n/apps              installed native applications", FS_PROTECTED);
+            "Critical tree:\n/system/boot       loader and pre-OS handoff records\n/system/kernel     core, ABI, and memory records\n/system/firmware   UEFI interface records\n/system/config     boot and shell policy\n/system/drivers    hardware service records\n/system/runtime    direct FAT runtime records\n/system/security   integrity and protected paths\n/apps              installed native applications", FS_PROTECTED);
     }
     if (boot >= 0) {
         int retiredManagerInfo = fs_find_child((UINTN)boot, "boot-manager.info");
@@ -1499,11 +2032,11 @@ static int fs_restore_system(void) {
     }
     if (kernel >= 0) {
         fs_ensure_file((UINTN)kernel, "kernel.info",
-            "critical=yes\nmodel=single-address-space\narchitecture=AArch64\nentry=EfiMain\nservices=shell,MiniFS2,apps", FS_PROTECTED);
+            "critical=yes\nmodel=single-address-space\narchitecture=AArch64\nentry=EfiMain\nservices=shell,direct FAT filesystem,apps", FS_PROTECTED);
         fs_ensure_file((UINTN)kernel, "abi.info",
             "freestanding C17\nunix_abi=no\nposix=no\nsyscalls=native TinyGPT services", FS_PROTECTED);
         fs_ensure_file((UINTN)kernel, "memory.map",
-            "core=static image\nfilesystem=static checked nodes\napplications=UEFI pool\nboot_services=active", FS_PROTECTED);
+            "core=static image\nfilesystem=bounded metadata and I/O buffers\nfile authority=FAT entries\napplications=UEFI pool\nboot_services=active", FS_PROTECTED);
     }
     if (firmware >= 0) {
         fs_ensure_file((UINTN)firmware, "uefi.info",
@@ -1513,7 +2046,7 @@ static int fs_restore_system(void) {
     }
     if (config >= 0) {
         fs_ensure_file((UINTN)config, "boot.cfg",
-            "pre_os_environment=auto\npre_os_hotkey=R\nboot_menu_hotkey=Enter\npre_os_window=2s\npartition_default=BOOTORD.CFG\npartition_registry=PARTS.CFG\nsnapshots=2\nintegrity_scan=scan N\nwatchdog=disabled", FS_PROTECTED);
+            "pre_os_environment=auto\npre_os_hotkey=R\nboot_menu_hotkey=Enter\npre_os_window=2s\npartition_default=BOOTORD.CFG\npartition_registry=PARTS.CFG\nstorage=direct FAT entries\nintegrity_scan=scan N\nwatchdog=disabled", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "shell.cfg",
             "home=/home\napps=/apps\ntemporary=/tmp\nprompt=tinygpt\nsettings=/home/.tinygptrc\nnavigation=cd", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "protection.cfg",
@@ -1523,17 +2056,25 @@ static int fs_restore_system(void) {
         fs_ensure_file((UINTN)drivers, "graphics.info", "UEFI Graphics Output Protocol\nconsumer=Freedoom\nmode=firmware-native", FS_PROTECTED);
         fs_ensure_file((UINTN)drivers, "input.info", "UEFI Simple Text Input\nkeyboard=polling\nrelease=simulated", FS_PROTECTED);
         fs_ensure_file((UINTN)drivers, "network.info", "UEFI HTTP/TLS\ntransport=firmware\naddress=IPv4 DHCP\nupdate channels=main,nightly beta\nrequired=firmware HTTP and CA trust", FS_PROTECTED);
-        fs_ensure_file((UINTN)drivers, "storage.info", "UEFI Simple File System + BlockIO\npartition 1=TINYRECOV protected FAT16\npartition 2+=system/data FAT\nsnapshots=TINYFS0.BIN,TINYFS1.BIN per target", FS_PROTECTED);
+        fs_ensure_file((UINTN)drivers, "storage.info", "UEFI Simple File System + BlockIO\npartition 1=TINYRECOV protected FAT16\npartition 2+=system/data FAT\nnamespace=TINYGPTFS/ROOT per target", FS_PROTECTED);
         fs_ensure_file((UINTN)drivers, "timer.info", "ARM generic virtual counter\nclock=monotonic", FS_PROTECTED);
     }
     if (runtime >= 0) {
-        fs_ensure_file((UINTN)runtime, "minifs2.info", "hierarchical=yes\nchecksums=FNV-1a\nauto_repair=yes\nmax_nodes=96\nfile_limit=8191", FS_PROTECTED);
-        fs_ensure_file((UINTN)runtime, "mounts.info", "/            MiniFS2 read-write\n/system      protected\n/apps        protected\nEFI FAT32    platform storage", FS_PROTECTED);
-        fs_ensure_file((UINTN)runtime, "snapshots.info", "copies=2\nstrategy=alternating\nselection=newest-valid\nfiles=TINYFS0.BIN,TINYFS1.BIN", FS_PROTECTED);
+        int retiredMiniFs = fs_find_child((UINTN)runtime, "minifs2.info");
+        int retiredSnapshots = fs_find_child((UINTN)runtime, "snapshots.info");
+        if (retiredMiniFs >= 0) {
+            if (fs_remove_recursive((UINTN)retiredMiniFs)) migrated = 1;
+        }
+        if (retiredSnapshots >= 0) {
+            if (fs_remove_recursive((UINTN)retiredSnapshots)) migrated = 1;
+        }
+        fs_ensure_file((UINTN)runtime, "filesystem.info", "authority=individual FAT entries\nnamespace=TINYGPTFS/ROOT\nchecksums=scan-time FNV-1a\nmetadata_cache=96\nfile_limit=8191", FS_PROTECTED);
+        fs_ensure_file((UINTN)runtime, "mounts.info", "/            direct FAT read-write\n/system      protected\n/apps        protected\nexternal FAT platform data is hidden", FS_PROTECTED);
+        fs_ensure_file((UINTN)runtime, "transactions.info", "writes=journal-first temporary replacement\nmarker=TINYGPTFS/FORMAT.DAT\njournals=TINYGPTFS/TXN.CMT,TINYGPTFS/TXN.BAK\nlegacy retirement=TINYFS.RET\nwhole-filesystem rollback=retired", FS_PROTECTED);
     }
     if (security >= 0) {
         fs_ensure_file((UINTN)security, "integrity.policy",
-            "critical nodes use FNV-1a checksums\nupdates require HTTPS, SHA-256, and ARM64 PE validation\nverify at boot with scan\nauto-repair metadata\nrollback to newest valid snapshot", FS_PROTECTED);
+            "file bytes are read and hashed during scan\nhashes are observational, not persisted trust anchors\nupdates require HTTPS, SHA-256, and ARM64 PE validation\nverify structure and required files at boot\nincomplete file transactions recover at boot", FS_PROTECTED);
         fs_ensure_file((UINTN)security, "protected.paths",
             "/system\n/apps\n/lost+found\nUnlock requires exact UNLOCK confirmation and expires at reboot.", FS_PROTECTED);
     }
@@ -1541,8 +2082,7 @@ static int fs_restore_system(void) {
         int previousEditor = fs_find_child((UINTN)apps, "editor");
         int previousEditorInfo = previousEditor >= 0 && gNodes[previousEditor].type == FS_DIRECTORY
             ? fs_find_child((UINTN)previousEditor, "app.info") : -1;
-        if (previousEditorInfo < 0 || gNodes[previousEditorInfo].type != FS_FILE ||
-            !streq(gNodes[previousEditorInfo].data, editorAppInfo)) migrated = 1;
+        if (previousEditorInfo < 0 || gNodes[previousEditorInfo].type != FS_FILE) migrated = 1;
         doomApp = fs_ensure_dir((UINTN)apps, "doom", FS_PROTECTED);
         editorApp = fs_ensure_dir((UINTN)apps, "editor", FS_PROTECTED);
         shellApp = fs_ensure_dir((UINTN)apps, "shell", FS_PROTECTED);
@@ -1565,29 +2105,20 @@ static int fs_restore_system(void) {
             "Left/Right move by character\nUp/Down move through wrapped rows and scroll\nBackspace/Delete remove text\nEnter inserts a line\nF2 or Ctrl+S saves\nEsc exits; press twice to discard changes\nHome/End/PageUp/PageDown are unused", FS_PROTECTED);
     }
     if (shellApp >= 0) fs_ensure_file((UINTN)shellApp, "app.info",
-        "name=TinyGPT Shell\nkind=built-in\nfilesystem=MiniFS2\ncommands=help,settings,textedit", FS_PROTECTED);
+        "name=TinyGPT Shell\nkind=built-in\nfilesystem=direct FAT entries\ncommands=help,settings,textedit", FS_PROTECTED);
     if (home >= 0) {
         int homeReadme;
-        const char *legacyReadme =
-            "Easy navigation: home, root, up, back, go system, go apps, dir, open PATH. Try: sysfiles or apps";
-        const char *shortcutReadme =
-            "Navigation: home, root, up, back, go system, go apps, ls, open PATH. Try: sysfiles or apps";
         const char *newReadme =
             "Navigation: cd /system, cd /apps, cd .., cd -, and ls. Inspect files with cat PATH.";
         fs_ensure_dir((UINTN)home, "notes", 0);
         homeReadme = fs_find_child((UINTN)home, "readme.txt");
         if (homeReadme < 0) fs_ensure_file((UINTN)home, "readme.txt", newReadme, 0);
-        else if (gNodes[homeReadme].type == FS_FILE &&
-                 (streq(gNodes[homeReadme].data, legacyReadme) ||
-                  streq(gNodes[homeReadme].data, shortcutReadme))) {
-            fs_set_file((UINTN)homeReadme, newReadme);
-            migrated = 1;
-        }
     }
     return migrated;
 }
 
 static void fs_format(void) {
+    gPersistenceFailure = 0;
     memory_zero(gNodes, sizeof(gNodes));
     gNodes[FS_ROOT].used = 1;
     gNodes[FS_ROOT].type = FS_DIRECTORY;
@@ -1695,18 +2226,43 @@ static void fs_path(UINTN node, char *buffer, UINTN capacity) {
     }
 }
 
+static int fs_refresh_cache(void) {
+    char currentPath[FS_PATH_BYTES];
+    char previousPath[FS_PATH_BYTES];
+    int current;
+    int previous;
+    if (!gStorageReady || !storage_marker_valid()) return 1;
+    fs_path(gCwd, currentPath, sizeof(currentPath));
+    fs_path(gPreviousCwd, previousPath, sizeof(previousPath));
+    if (!storage_scan_direct()) return 0;
+    current = fs_resolve(currentPath);
+    previous = fs_resolve(previousPath);
+    gCwd = current >= 0 && gNodes[current].type == FS_DIRECTORY ? (UINTN)current : FS_ROOT;
+    gPreviousCwd = previous >= 0 && gNodes[previous].type == FS_DIRECTORY ? (UINTN)previous : FS_ROOT;
+    return 1;
+}
+
 static int fs_has_children(UINTN node) {
     UINTN index;
     for (index = 1; index < FS_MAX_NODES; index++) if (gNodes[index].used && gNodes[index].parent == node) return 1;
     return 0;
 }
 
-static void fs_remove_recursive(UINTN node) {
+static void fs_forget_recursive(UINTN node) {
     UINTN index;
-    for (index = 1; index < FS_MAX_NODES; index++) {
-        if (gNodes[index].used && gNodes[index].parent == node) fs_remove_recursive(index);
+    for (index = 1; index < FS_MAX_NODES; index++)
+        if (gNodes[index].used && gNodes[index].parent == node) fs_forget_recursive(index);
+    if (node != FS_ROOT) memory_zero(&gNodes[node], sizeof(gNodes[node]));
+}
+
+static int fs_remove_recursive(UINTN node) {
+    if (node == FS_ROOT) return 0;
+    if (!storage_delete_node(node)) {
+        gPersistenceFailure = 1;
+        return 0;
     }
-    if (node != FS_ROOT) gNodes[node].used = 0;
+    fs_forget_recursive(node);
+    return 1;
 }
 
 static int fs_is_ancestor(UINTN ancestor, UINTN node) {
@@ -1726,6 +2282,13 @@ static int fs_is_protected(UINTN node) {
         node = gNodes[node].parent;
     }
     return 0;
+}
+
+static int fs_print_file(UINTN node) {
+    UINTN bytes = 0;
+    if (!storage_read_node(node, gFileBuffer, sizeof(gFileBuffer), &bytes)) return 0;
+    print(gFileBuffer);
+    return 1;
 }
 
 static void fs_list(UINTN directory) {
@@ -1818,110 +2381,52 @@ static void fs_change_directory(const char *path, int previous) {
 }
 
 static int fs_check(int repair, int verbose) {
-    UINTN index;
     int errors = 0;
-    if (!gNodes[FS_ROOT].used || gNodes[FS_ROOT].type != FS_DIRECTORY || gNodes[FS_ROOT].parent != FS_ROOT) {
-        errors++;
-        if (verbose) print("fsck: root node is invalid\n");
-        if (repair) {
-            fs_format();
-            if (verbose) print("fsck: filesystem rebuilt from defaults\n");
-            return errors;
-        }
-        return errors;
+    if (!storage_marker_valid()) {
+        if (verbose) print("fsck: direct-filesystem marker is missing or corrupt\n");
+        return 1;
     }
-    for (index = 0; index < FS_MAX_NODES; index++) {
-        UINTN other;
-        UINTN cursor;
-        UINTN steps = 0;
-        int invalid = 0;
-        if (!gNodes[index].used) continue;
-        if ((index && !fs_valid_name(gNodes[index].name)) ||
-            (gNodes[index].type != FS_FILE && gNodes[index].type != FS_DIRECTORY) ||
-            gNodes[index].parent >= FS_MAX_NODES || !gNodes[gNodes[index].parent].used ||
-            gNodes[gNodes[index].parent].type != FS_DIRECTORY ||
-            (gNodes[index].type == FS_FILE && gNodes[index].size >= FS_DATA_BYTES)) invalid = 1;
-        cursor = index;
-        while (cursor != FS_ROOT && steps++ < FS_MAX_NODES) {
-            if (cursor >= FS_MAX_NODES || !gNodes[cursor].used) {
-                invalid = 1;
-                break;
-            }
-            cursor = gNodes[cursor].parent;
-        }
-        if (cursor != FS_ROOT || steps >= FS_MAX_NODES) invalid = 1;
-        for (other = 1; other < index; other++) {
-            if (gNodes[other].used && gNodes[other].parent == gNodes[index].parent &&
-                streq(gNodes[other].name, gNodes[index].name)) invalid = 1;
-        }
-        if (invalid) {
-            errors++;
-            if (verbose) {
-                print("fsck: invalid node ");
-                print_u64(index);
-                print("\n");
-            }
-            if (repair && index) gNodes[index].used = 0;
-            continue;
-        }
-        if (gNodes[index].checksum != fs_node_checksum(&gNodes[index])) {
-            errors++;
-            if (verbose) {
-                print("fsck: checksum mismatch: ");
-                print(index ? gNodes[index].name : "/");
-                print("\n");
-            }
-            if (repair) {
-                if (gNodes[index].type == FS_FILE) gNodes[index].data[gNodes[index].size] = 0;
-                fs_update(index);
-            }
-        }
+    if (!storage_scan_direct()) {
+        if (verbose) print("fsck: FAT tree is unreadable, too large, or contains invalid/colliding names\n");
+        return 1;
     }
-    if (repair) {
-        (void)fs_restore_system();
-        if (gCwd >= FS_MAX_NODES || !gNodes[gCwd].used || gNodes[gCwd].type != FS_DIRECTORY) gCwd = FS_ROOT;
-    }
+    if (repair) (void)fs_restore_system();
     if (verbose) {
-        if (errors) {
-            print("fsck: ");
-            print_u64((UINT64)errors);
-            print(repair ? " issue(s) repaired\n" : " issue(s) found\n");
-        } else print("fsck: clean\n");
+        if (errors) { print("fsck: "); print_u64((UINT64)errors); print(" direct FAT issue(s) found\n"); }
+        else print("fsck: FAT tree is readable; scan-time hashes refreshed\n");
     }
     return errors;
 }
 
 static int fs_scan_integrity(int verbose) {
-    int errors = fs_check(0, verbose);
+    int errors = 0;
     if (!gStorageReady) {
-        if (verbose) print("snapshots: unavailable (volatile storage)\n");
-        return errors;
+        if (verbose) print("direct FAT storage: unavailable\n");
+        return 1;
     }
-    storage_probe_slots();
-    if (verbose) {
-        print("snapshot A: ");
-        print(gSlotValid[0] ? "valid generation " : "missing/corrupt\n");
-        if (gSlotValid[0]) { print_u64(gSlotGeneration[0]); print("\n"); }
-        print("snapshot B: ");
-        print(gSlotValid[1] ? "valid generation " : "missing/corrupt\n");
-        if (gSlotValid[1]) { print_u64(gSlotGeneration[1]); print("\n"); }
-    }
-    if (!gSlotValid[0] && !gSlotValid[1]) {
-        if (verbose) print("scan: no valid persistent snapshot\n");
+    if (!storage_marker_valid()) {
+        if (verbose) print("direct FAT marker: missing/corrupt\n");
         errors++;
-    } else if (verbose && !errors) {
-        print("scan: active file integrity verified\n");
+    } else if (verbose) print("direct FAT marker: valid\n");
+    if (storage_transaction_pending()) {
+        if (verbose) print(gTransactionCorrupt ?
+            "transaction journal: corrupt with recovery payload present; reset may be required\n" :
+            "transaction journal: recovery incomplete\n");
+        errors++;
+    } else if (verbose) print("transaction journal: clean\n");
+    errors += fs_check(0, verbose);
+    if (fs_resolve("/system/version.txt") < 0 || fs_resolve("/system/security/integrity.policy") < 0 ||
+        fs_resolve("/apps/registry.txt") < 0 || fs_resolve("/lost+found") < 0) {
+        if (verbose) print("scan: required protected system entries are missing\n");
+        errors++;
     }
+    if (verbose && !errors) print("scan: authoritative FAT entries are readable and structurally valid\n");
     return errors;
 }
 
 static int fs_commit(void) {
-    if (!gStorageReady) return 0;
-    if (!storage_sync()) {
-        print("warning: persistent snapshot failed; RAM copy is still active\n");
-        return 0;
-    }
-    return 1;
+    /* Compatibility seam: every mutation is already persisted before cache update. */
+    return gStorageReady;
 }
 
 static int poll_input_key(EFI_INPUT_KEY *key) {
@@ -2070,27 +2575,24 @@ static void settings_parse_config_line(char *line) {
 }
 
 static void settings_load(void) {
+    char *config = gFileBuffer;
     int node;
-    UINTN position = 0;
+    UINTN position = 0, length = 0;
     settings_defaults();
     node = fs_resolve("/home/.tinygptrc");
-    if (node < 0 || gNodes[node].type != FS_FILE) return;
-    while (position < gNodes[node].size) {
+    if (node < 0 || gNodes[node].type != FS_FILE ||
+        !storage_read_node((UINTN)node, config, FS_DATA_BYTES, &length)) return;
+    while (position < length) {
         char line[64];
         UINTN used = 0;
         int overflow = 0;
-        while (position < gNodes[node].size &&
-               gNodes[node].data[position] != '\n' && gNodes[node].data[position] != '\r') {
-            char ch = gNodes[node].data[position++];
-            if (!ch) {
-                position = gNodes[node].size;
-                break;
-            }
+        while (position < length && config[position] != '\n' && config[position] != '\r') {
+            char ch = config[position++];
+            if (!ch) { position = length; break; }
             if (used + 1U < sizeof(line)) line[used++] = ch;
             else overflow = 1;
         }
-        while (position < gNodes[node].size &&
-               (gNodes[node].data[position] == '\n' || gNodes[node].data[position] == '\r')) position++;
+        while (position < length && (config[position] == '\n' || config[position] == '\r')) position++;
         line[used] = 0;
         if (!overflow && used) settings_parse_config_line(line);
     }
@@ -2133,8 +2635,7 @@ static int settings_save(void) {
     string_append(data, "\nscrollback=", sizeof(data));
     settings_append_uint8(data, gSettings.scrollback, sizeof(data));
     string_append(data, "\n", sizeof(data));
-    fs_set_file((UINTN)node, data);
-    return gStorageReady && storage_sync();
+    return gStorageReady && fs_set_file((UINTN)node, data);
 }
 
 static void settings_apply_runtime(void) {
@@ -2353,7 +2854,7 @@ static int pre_os_mount_target(UINTN partition, int verbose) {
         return 0;
     }
     if (!storage_mount_latest()) {
-        if (verbose) print("target: no valid TinyGPT snapshot is installed\n");
+        if (verbose) print("target: no valid direct FAT filesystem (or importable legacy image) is installed\n");
         return 0;
     }
     return 1;
@@ -2366,7 +2867,7 @@ static int pre_os_bootable(UINTN partition, int verbose) {
         return 0;
     }
     if (fs_scan_integrity(verbose)) {
-        if (verbose) print("boot: repair or rollback is required\n");
+        if (verbose) print("boot: repair or reset is required\n");
         return 0;
     }
     return 1;
@@ -2374,6 +2875,7 @@ static int pre_os_bootable(UINTN partition, int verbose) {
 
 static int pre_os_repair(UINTN partition) {
     int mounted;
+    int legacyFiles;
     if (partition == 1U) {
         print("repair: partition 1 is protected recovery storage\n");
         return 0;
@@ -2382,16 +2884,33 @@ static int pre_os_repair(UINTN partition) {
         print("repair: target partition is unavailable\n");
         return 0;
     }
+    gPersistenceFailure = 0;
+    legacyFiles = storage_path_exists(gSlot0Path) || storage_path_exists(gSlot1Path);
     mounted = storage_mount_latest();
     if (!mounted) {
-        fs_format();
+        if (legacyFiles && !storage_retirement_valid()) {
+            print("repair: legacy import failed; snapshots were left unchanged\n");
+            return 0;
+        }
         gGeneration = 0;
-        print("repair: installing TinyGPT filesystem on empty partition\n");
+        print("repair: installing or repairing the direct FAT filesystem\n");
+        if (!storage_install_empty()) {
+            print("repair: could not create or scan TINYGPTFS/ROOT\n");
+            return 0;
+        }
+        gPersistenceFailure = 0;
+        (void)fs_restore_system();
     } else {
+        if (storage_transaction_pending()) {
+            print(gTransactionCorrupt ?
+                "repair: corrupt transaction cannot be inferred safely; use reset to discard the target namespace\n" :
+                "repair: transaction recovery is incomplete; no new writes were attempted\n");
+            return 0;
+        }
         fs_check(1, 1);
     }
-    if (!fs_commit()) {
-        print("repair: repaired state could not be saved\n");
+    if (gPersistenceFailure || !fs_commit() || fs_scan_integrity(0)) {
+        print("repair: repaired state could not be saved and verified completely\n");
         return 0;
     }
     if (!storage_clear_os_missing()) {
@@ -2496,7 +3015,7 @@ static int boot_screen(EFI_HANDLE imageHandle) {
     int mounted = 0;
     int errors = 1;
     int osMissing = 1;
-    int snapshotFiles = 0;
+    int legacyFiles = 0;
     int factoryInstall = 0;
     UINTN targetPartition = 2U;
     gST->ConOut->ClearScreen(gST->ConOut);
@@ -2518,24 +3037,29 @@ static int boot_screen(EFI_HANDLE imageHandle) {
     if (targetPartition == 1U) return 1;
     if (gStorageReady && storage_activate_partition(targetPartition)) {
         osMissing = storage_os_missing();
-        snapshotFiles = storage_path_exists(gSlot0Path) || storage_path_exists(gSlot1Path);
+        legacyFiles = storage_path_exists(gSlot0Path) || storage_path_exists(gSlot1Path);
         factoryInstall = storage_path_exists(gFactoryInstallPath);
         if (!osMissing) {
             mounted = storage_mount_latest();
-            if (!mounted && !snapshotFiles && factoryInstall) {
-                fs_format();
+            if (!mounted && !legacyFiles && factoryInstall) {
                 gGeneration = 0;
-                mounted = storage_sync();
+                mounted = storage_install_empty();
+                if (mounted) {
+                    fs_format();
+                    mounted = fs_scan_integrity(0) == 0;
+                }
                 if (mounted) storage_delete_marker(gFactoryInstallPath);
-            } else if (!mounted && !snapshotFiles) {
-                osMissing = 1;
+            } else if (!mounted && !legacyFiles) osMissing = 1;
+            if (mounted && !storage_transaction_pending()) {
+                gPersistenceFailure = 0;
+                (void)fs_restore_system();
+                if (gPersistenceFailure) mounted = 0;
             }
         }
     }
-    boot_stage(3, "TinyGPT system snapshot", mounted);
+    boot_stage(3, "authoritative direct FAT filesystem", mounted);
     if (mounted) errors = fs_scan_integrity(0);
-    boot_stage(4, "system integrity and checksums", mounted && errors == 0);
-    if (mounted && errors == 0 && fs_restore_system()) fs_commit();
+    boot_stage(4, "filesystem readability and required entries", mounted && errors == 0);
     boot_stage(5, "TinyGPT operating system", !osMissing && mounted && errors == 0);
     if (osMissing) {
         print("\n  OS MISSING - OPENING PRE-OS ENVIRONMENT\n");
@@ -2560,9 +3084,9 @@ static void pre_os_help(void) {
         "  use N            select a partition for file navigation\n"
         "  order            show the default boot partition\n"
         "  order N          set a numbered partition as the default\n"
-        "  scan N           verify a partition and both snapshots\n"
+        "  scan N           verify direct FAT entries and transaction state\n"
         "  repair N         repair or install TinyGPT on a partition\n"
-        "  rollback N       load that partition's previous snapshot\n"
+        "  rollback N       report legacy rollback availability\n"
         "  pwd              print the current directory\n"
         "  ls [PATH]        list a directory or file\n"
         "  cd [PATH|-]      change directory; no path opens /home\n"
@@ -2588,7 +3112,7 @@ static void pre_os_environment(void) {
     print("TinyGPT has not started. Firmware recovery tools are active.\n");
     print(storage_os_missing() ? "Status: operating system missing or storage unavailable.\n" :
           "Status: operating system present; use 'boot' to start it.\n");
-    print("Two checksummed snapshots protect the persistent filesystem.\n");
+    print("Individual entries under TINYGPTFS/ROOT are the persistent filesystem.\n");
     print("Scrollback: 256 lines; Up/Down line, PageUp/PageDown page, Home oldest, End/Esc live.\n");
     pre_os_help();
     for (;;) {
@@ -2675,13 +3199,8 @@ static void pre_os_environment(void) {
             if (!pre_os_parse_partition(skip_spaces(line + 9), &partition))
                 print("rollback: provide a non-protected partition number\n");
             else if (pre_os_mount_target(partition, 1)) {
-                if (!storage_rollback()) print("rollback: no older valid snapshot\n");
-                else {
-                    fs_check(1, 1);
-                    if (fs_commit() && storage_clear_os_missing())
-                        print("rollback: previous snapshot restored\n");
-                    else print("rollback: restored state could not be made bootable\n");
-                }
+                if (!storage_rollback())
+                    print("rollback: unavailable; whole-filesystem snapshots were retired by direct FAT storage\n");
             }
         } else if (streq(line, "rollback")) {
             print("rollback: provide a non-protected partition number\n");
@@ -2707,7 +3226,8 @@ static void pre_os_environment(void) {
             int node = fs_resolve(skip_spaces(line + 4));
             if (node < 0) print("cat: file not found\n");
             else if (gNodes[node].type != FS_FILE) print("cat: not a file\n");
-            else { print(gNodes[node].data); print("\n"); }
+            else if (!fs_print_file((UINTN)node)) print("cat: disk read failed\n");
+            else print("\n");
         } else if (starts_with(line, "stat ")) {
             int node = fs_resolve(skip_spaces(line + 5));
             if (node < 0) print("stat: path not found\n");
@@ -2717,7 +3237,7 @@ static void pre_os_environment(void) {
                 print("path: "); print(path);
                 print("\ntype: "); print(gNodes[node].type == FS_DIRECTORY ? "directory" : "file");
                 print("\nsize: "); print_u64(gNodes[node].size);
-                print("\nchecksum: "); print_hex(gNodes[node].checksum); print("\n");
+                print("\nscan hash: "); print_hex(gNodes[node].checksum); print("\n");
             }
         } else if (streq(line, "tree") || starts_with(line, "tree ")) {
             char *path = streq(line, "tree") ? (char *)"/" : skip_spaces(line + 5);
@@ -2737,11 +3257,19 @@ static void pre_os_environment(void) {
                 if (starts_with(answer, "RESET ")) {
                     UINTN confirmed;
                     if (pre_os_parse_partition(skip_spaces(answer + 6), &confirmed) && confirmed == partition) {
-                        if (!storage_mount_latest()) gGeneration = 0;
-                        fs_format();
-                        if (fs_commit() && storage_clear_os_missing())
-                            print("MiniFS2 reset complete; target partition is bootable\n");
-                        else print("reset failed: repaired state was not saved\n");
+                        UINTN removed = 0, failures = 0;
+                        EFI_FILE_PROTOCOL *direct = (EFI_FILE_PROTOCOL *)0;
+                        if (storage_open_for_delete(gVolumeRoot, (CHAR16 *)gDirectNamespacePath, &direct) == EFI_SUCCESS && direct) {
+                            storage_wipe_directory(direct, 99U, &removed, &failures);
+                            if (direct->Delete(direct) != EFI_SUCCESS) failures++;
+                        }
+                        gGeneration = 0;
+                        if (!failures && storage_install_empty()) {
+                            fs_format();
+                            if (fs_scan_integrity(0) == 0 && storage_clear_os_missing())
+                                print("Direct FAT reset complete; target partition is bootable\n");
+                            else print("reset failed: defaults could not be verified\n");
+                        } else print("reset failed: target namespace could not be replaced\n");
                     } else print("reset cancelled\n");
                 } else print("reset cancelled\n");
             }
@@ -2800,8 +3328,8 @@ static void command_help(void) {
         "  cp SOURCE DEST       copy a file\n"
         "  mv SOURCE DEST       move or rename a node\n"
         "  stat PATH            show file or directory metadata\n"
-        "  df                   show MiniFS node and byte usage\n"
-        "  fsck                 verify filesystem structure and checksums\n"
+        "  df                   show cached FAT entry and byte usage\n"
+        "  fsck                 verify structure/readability and refresh hashes\n"
         "Application and system commands:\n"
         "  textedit [PATH]      text editor; omit PATH for the interactive file picker\n"
         "  doom                 launch Freedoom; Q or F12 returns to the shell\n"
@@ -2809,8 +3337,8 @@ static void command_help(void) {
         "  protect [status|unlock|lock] manage protected-node writes\n"
         "  update [check] [main|nightly]\n"
         "                       select and check/install an update channel\n"
-        "  reboot               save MiniFS and restart TinyGPT\n"
-        "  shutdown             save MiniFS and power off the machine\n"
+        "  reboot               restart TinyGPT (writes already persist)\n"
+        "  shutdown             power off TinyGPT (writes already persist)\n"
         "Keyboard: Up/Down scroll lines; PageUp/PageDown scroll pages;\n"
         "          Home shows oldest output; End/Esc returns to live output.\n"
     );
@@ -2820,10 +3348,10 @@ static void command_info(void) {
     print("TinyGPT " TINYGPT_DISPLAY_VERSION "\n");
     print("Architecture : ARM64 / AArch64\n");
     print("Boot method  : UEFI (BOOTAA64.EFI)\n");
-    print("Filesystem   : MiniFS2, 96 hierarchical nodes, 2 snapshots\n");
+    print("Filesystem   : direct FAT entries, 96-entry metadata cache\n");
     print("Storage      : ");
-    print(gStorageReady ? "persistent FAT-backed snapshots\n" : "volatile fallback\n");
-    print("Generation   : ");
+    print(gStorageReady ? "persistent TINYGPTFS/ROOT namespace\n" : "unavailable\n");
+    print("Format gen.  : ");
     print_u64(gGeneration);
     print("\nProtection   : ");
     print(gProtectionUnlocked ? "UNLOCKED until reboot" : "locked");
@@ -2840,6 +3368,11 @@ static void command_info(void) {
 static void run_command(char *line) {
     char *command = skip_spaces(line);
     if (!*command) return;
+    /* The cache is disposable: refresh before path/protection decisions. */
+    if (!fs_refresh_cache()) {
+        print("filesystem: FAT metadata refresh failed; command aborted\n");
+        return;
+    }
     if (streq(command, "help")) {
         command_help();
     } else if (streq(command, "clear")) {
@@ -2890,10 +3423,8 @@ static void run_command(char *line) {
         int node = fs_resolve(skip_spaces(command + 4));
         if (node < 0) print("cat: file not found\n");
         else if (gNodes[node].type != FS_FILE) print("cat: not a file\n");
-        else {
-            print(gNodes[node].data);
-            print("\n");
-        }
+        else if (!fs_print_file((UINTN)node)) print("cat: disk read failed\n");
+        else print("\n");
     } else if (starts_with(command, "write ") || starts_with(command, "append ")) {
         int append = starts_with(command, "append ");
         char *data;
@@ -2918,19 +3449,24 @@ static void run_command(char *line) {
             else if (gNodes[node].type != FS_FILE) print("write: path is a directory\n");
             else if (fs_is_protected((UINTN)node) && !gProtectionUnlocked) print("write: protected system file (use 'protect unlock')\n");
             else {
+                int saved;
                 if (append) {
-                    UINTN available = FS_DATA_BYTES - 1 - gNodes[node].size;
+                    UINTN oldLength = 0;
                     UINTN amount = string_length(data);
-                    if (amount > available) amount = available;
-                    memory_copy(gNodes[node].data + gNodes[node].size, data, amount);
-                    gNodes[node].size += amount;
-                    gNodes[node].data[gNodes[node].size] = 0;
-                    fs_update((UINTN)node);
-                } else fs_set_file((UINTN)node, data);
-                fs_commit();
-                print("saved ");
-                print_u64(gNodes[node].size);
-                print(" bytes\n");
+                    if (!storage_read_node((UINTN)node, gFileBuffer, sizeof(gFileBuffer), &oldLength)) {
+                        print("append: disk read failed; file unchanged\n");
+                        return;
+                    }
+                    if (amount >= FS_DATA_BYTES - oldLength) amount = FS_DATA_BYTES - oldLength - 1U;
+                    memory_copy(gFileBuffer + oldLength, data, amount);
+                    saved = fs_write_file((UINTN)node, gFileBuffer, oldLength + amount);
+                } else saved = fs_set_file((UINTN)node, data);
+                if (!saved) print("write: disk transaction failed; persistence was not claimed\n");
+                else {
+                    print("saved ");
+                    print_u64(gNodes[node].size);
+                    print(" bytes\n");
+                }
             }
         }
     } else if (starts_with(command, "mkdir ")) {
@@ -2963,13 +3499,11 @@ static void run_command(char *line) {
             }
             gCwd = FS_ROOT;
             gPreviousCwd = FS_ROOT;
-            fs_remove_recursive(FS_ROOT);
             complete = storage_wipe_os(&removed, &failures);
-            gStorageReady = 0;
-            gSlotValid[0] = 0;
-            gSlotValid[1] = 0;
-            gSlotGeneration[0] = 0;
-            gSlotGeneration[1] = 0;
+            memory_zero(gNodes, sizeof(gNodes));
+            gNodes[FS_ROOT].used = 1;
+            gNodes[FS_ROOT].type = FS_DIRECTORY;
+            gNodes[FS_ROOT].parent = FS_ROOT;
             gGeneration = 0;
             print("removed ");
             print_u64(removed);
@@ -2978,17 +3512,16 @@ static void run_command(char *line) {
                 print("rm -rf /: PARTIAL FAILURE; ");
                 print_u64(failures);
                 print(" deletion operation(s) failed\n");
-                print("Storage saving is disabled. Run rm -rf / again to retry.\n");
+                print("Storage remains open. Run rm -rf / again to retry.\n");
                 return;
             }
             volume = gVolumeRoot;
+            gStorageReady = 0;
             gVolumeRoot = (EFI_FILE_PROTOCOL *)0;
             gDedicatedStorage = 0;
             volume->Flush(volume);
             volume->Close(volume);
-            print("TinyGPT files, snapshots, updater backups, and Freedoom data are gone.\n");
-            print("The pre-OS environment remains and will open at the next boot.\n");
-            print("The running shell will continue from RAM without persistent storage.\n");
+            print("TinyGPT direct files, updater backups, and Freedoom data are gone.\n");
         } else if ((UINTN)node == FS_ROOT) print("remove: only exact rm -rf / can erase root\n");
         else if (fs_is_protected((UINTN)node) && !gProtectionUnlocked) print("remove: protected system node (use 'protect unlock')\n");
         else if (!recursive && directory && gNodes[node].type != FS_DIRECTORY) print("rmdir: not a directory\n");
@@ -2997,10 +3530,9 @@ static void run_command(char *line) {
         else if ((UINTN)node == gCwd || fs_is_ancestor((UINTN)node, gCwd)) print("remove: directory is in use\n");
         else {
             if (fs_is_ancestor((UINTN)node, gPreviousCwd)) gPreviousCwd = FS_ROOT;
-            if (recursive) fs_remove_recursive((UINTN)node);
-            else gNodes[node].used = 0;
-            fs_commit();
-            print(recursive ? "removed recursively\n" : "removed\n");
+            if (!fs_remove_recursive((UINTN)node))
+                print("remove: disk transaction failed; entry may require boot recovery\n");
+            else print(recursive ? "removed recursively\n" : "removed\n");
         }
     } else if (starts_with(command, "cp ")) {
         char *destination;
@@ -3009,6 +3541,7 @@ static void run_command(char *line) {
         UINTN parent = FS_ROOT;
         char name[FS_NAME_BYTES];
         int destinationNode = *destination ? fs_resolve(destination) : -1;
+        UINTN sourceBytes = 0;
         if (sourceNode < 0 || gNodes[sourceNode].type != FS_FILE) print("cp: source file not found\n");
         else {
             if (destinationNode >= 0 && gNodes[destinationNode].type == FS_DIRECTORY) {
@@ -3022,12 +3555,14 @@ static void run_command(char *line) {
                 print("cp: protected destination (use 'protect unlock')\n");
                 return;
             }
+            if (!storage_read_node((UINTN)sourceNode, gFileBuffer, sizeof(gFileBuffer), &sourceBytes)) {
+                print("cp: disk read failed\n");
+                return;
+            }
             destinationNode = fs_alloc(FS_FILE, parent, name, 0);
             if (destinationNode < 0) print("cp: destination exists or filesystem full\n");
-            else {
-                fs_set_file((UINTN)destinationNode, gNodes[sourceNode].data);
-                fs_commit();
-            }
+            else if (!fs_write_file((UINTN)destinationNode, gFileBuffer, sourceBytes))
+                print("cp: disk write incomplete; destination persistence was not confirmed\n");
         }
     } else if (starts_with(command, "mv ")) {
         char *destination;
@@ -3050,10 +3585,13 @@ static void run_command(char *line) {
             else if (fs_find_child(parent, name) >= 0) print("mv: destination already exists\n");
             else if (gNodes[sourceNode].type == FS_DIRECTORY && fs_is_ancestor((UINTN)sourceNode, parent)) print("mv: cannot move a directory inside itself\n");
             else {
-                gNodes[sourceNode].parent = parent;
-                string_copy(gNodes[sourceNode].name, name, FS_NAME_BYTES);
-                fs_update((UINTN)sourceNode);
-                fs_commit();
+                if (!storage_rename_node((UINTN)sourceNode, parent, name))
+                    print("mv: disk rename failed; boot recovery may be required\n");
+                else {
+                    gNodes[sourceNode].parent = parent;
+                    string_copy(gNodes[sourceNode].name, name, FS_NAME_BYTES);
+                    fs_update((UINTN)sourceNode);
+                }
             }
         }
     } else if (starts_with(command, "stat ")) {
@@ -3065,7 +3603,7 @@ static void run_command(char *line) {
             print("path: "); print(path);
             print("\ntype: "); print(gNodes[node].type == FS_DIRECTORY ? "directory" : "file");
             print("\nsize: "); print_u64(gNodes[node].size);
-            print("\nchecksum: "); print_hex(gNodes[node].checksum);
+            print("\nscan hash: "); print_hex(gNodes[node].checksum);
             print("\nprotected: "); print(fs_is_protected((UINTN)node) ? "yes\n" : "no\n");
         }
     } else if (streq(command, "df")) {
@@ -3102,11 +3640,9 @@ static void run_command(char *line) {
                       streq(command, "update check nightly");
         command_update(checkOnly, nightly);
     } else if (streq(command, "reboot")) {
-        fs_commit();
         gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, (void *)0);
         for (;;) __asm__ volatile("wfe");
     } else if (streq(command, "shutdown")) {
-        fs_commit();
         gST->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, (void *)0);
         for (;;) __asm__ volatile("wfe");
     } else {
@@ -3128,6 +3664,8 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     gStartTicks = timer_count();
     gGeneration = 0;
     gProtectionUnlocked = 0;
+    gPersistenceFailure = 0;
+    gTransactionCorrupt = 0;
     gScrollbackEnabled = 0;
     settings_defaults();
     gDoomStarted = 0;
@@ -3147,7 +3685,7 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     settings_use_accent_color();
     print("TinyGPT " TINYGPT_DISPLAY_VERSION);
     settings_use_default_color();
-    print(" - ARM64 shell + MiniFS2\n");
+    print(" - ARM64 shell + direct FAT filesystem\n");
     print("Pre-OS recovery: press R during firmware startup.\n\n");
     for (;;) {
         fs_path(gCwd, path, sizeof(path));

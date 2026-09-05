@@ -8,7 +8,7 @@
 [![Release](https://img.shields.io/github/v/release/firesafetylite/TinyGPT?display_name=tag)](https://github.com/firesafetylite/TinyGPT/releases/latest)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 
-**TinyGPT is a small, freestanding ARM64 operating system that boots directly through UEFI.** It provides a persistent shell, the MiniFS2 filesystem, an isolated pre-OS recovery environment, an interactive text editor, firmware-backed updates, and a native Freedoom port. It is built from scratch in C and does not use a Unix or Linux kernel.
+**TinyGPT is a small, freestanding ARM64 operating system that boots directly through UEFI.** It provides a persistent direct FAT-backed filesystem, an isolated pre-OS recovery environment, an interactive text editor, firmware-backed updates, and a native Freedoom port. It is built from scratch in C and does not use a Unix or Linux kernel.
 
 > TinyGPT is the project name; the operating system is not a language model. The disk image does use a standard GUID Partition Table (GPT).
 
@@ -16,7 +16,7 @@
 
 - Boots as a native AArch64 UEFI application
 - Ships as one 128 MiB GPT/FAT disk image
-- Stores data in two alternating, checksummed MiniFS2 snapshots
+- Stores each shell file and directory as an authoritative FAT entry under `TINYGPTFS/ROOT`
 - Verifies the filesystem and operating system before every normal boot
 - Keeps recovery tools on a protected partition that survives an OS wipe
 - Supports multiple bootable system/data partitions
@@ -51,7 +51,7 @@ The maintained image has two initial partitions and unallocated expansion space:
 | GPT partition | Label | Format | Purpose |
 | ---: | --- | --- | --- |
 | 1 | `TINYRECOV` | FAT16 ESP | Protected bootloader and pre-OS recovery environment |
-| 2 | `TINYGPT` | FAT32 | Initial TinyGPT system, MiniFS2 snapshots, settings, and Freedoom data |
+| 2 | `TINYGPT` | FAT32 | Direct TinyGPT filesystem, settings, and Freedoom data |
 | 3+ | User supplied | FAT16 | Additional system/data partitions created from recovery |
 
 Important files include:
@@ -61,9 +61,13 @@ Partition 1: TINYRECOV
 └── EFI/BOOT/BOOTAA64.EFI
 
 Partition 2: TINYGPT
-├── TINYGPT.NEW              first-boot installation marker
+├── TINYGPT.NEW              first-boot installation marker (removed after install)
 ├── DOOMU.WAD                Freedoom Phase 1
-└── TINYFS0.BIN/TINYFS1.BIN alternating MiniFS2 snapshots after first boot
+├── TINYFS.RET               durable legacy-import retirement marker
+└── TINYGPTFS/
+    ├── FORMAT.DAT           completed direct-format marker
+    ├── TXN.CMT/TXN.BAK      redundant mutation manifests when recovery is pending
+    └── ROOT/                authoritative shell files and directories
 ```
 
 Partition 1 is never exposed through normal filesystem commands. Partition 2 retains its original extent, while the remaining image space is available to `partition add`.
@@ -74,11 +78,11 @@ Before launching the shell, TinyGPT verifies:
 
 1. ARM64 UEFI firmware and the platform timer
 2. The TinyGPT boot volume
-3. The newest valid MiniFS2 snapshot
-4. Filesystem structure and active-file checksums
+3. The direct-format marker and any interrupted transaction
+4. FAT-tree readability, required protected entries, bounds, and observational scan-time hashes
 5. The installed operating-system state
 
-Press **Enter** during the two-second startup window to open the partition selector. Use Up/Down to choose a target, Enter to boot, **S** to save the default, or **R** to enter recovery. Recovery also opens automatically when the selected system is missing, cannot be mounted, or fails integrity checks. It never silently repairs a damaged installation.
+Press **Enter** during the two-second startup window to open the partition selector. Use Up/Down to choose a target, Enter to boot, **S** to save the default, or **R** to enter recovery. Recovery also opens automatically when the selected system is missing, cannot be mounted, or fails structural/readability checks. It never silently repairs a damaged installation.
 
 The pre-OS environment supports:
 
@@ -88,9 +92,9 @@ partition add MIB NAME         create a named FAT partition (minimum 4 MiB)
 partition name N NAME          rename a non-protected partition
 use N                          select a partition for file navigation
 order N                        save a partition as the default
-scan N                         verify a partition and both snapshots
-repair N                       repair or install TinyGPT on a partition
-rollback N                     load a partition's previous snapshot
+scan N                         verify direct FAT entries and transaction state
+repair N                       recover or install TinyGPT on a partition
+rollback N                     report that whole-filesystem rollback is retired
 pwd / ls / cd                  navigate the selected partition
 cat / stat / tree              inspect files and metadata
 reset N                        reset and reinstall after confirmation
@@ -101,11 +105,17 @@ reboot / shutdown              restart or power off
 
 Names may contain 1–11 letters, digits, underscores, or hyphens. They are normalized to uppercase and must be unique. A newly created partition is activated after one required firmware reboot, then TinyGPT initializes it automatically.
 
-The regular shell's `partitions` command is read-only. Partition creation, naming, repair, reset, rollback, boot-order changes, and recovery-partition access remain pre-OS-only.
+The regular shell's `partitions` command is read-only. Partition creation, naming, repair, reset, rollback-status reporting, boot-order changes, and recovery-partition access remain pre-OS-only.
 
-## MiniFS2 and the shell
+### One-time legacy import
 
-MiniFS2 is a persistent hierarchical filesystem designed for TinyGPT. It supports absolute and relative paths, `~`, `cd -`, nested directories, per-node FNV-1a checksums, 96 fixed nodes, and files up to 8191 bytes. Every saved state alternates between two complete snapshots.
+When no valid `TINYGPTFS/FORMAT.DAT` exists, TinyGPT may import the newest fully valid legacy `TINYFS0.BIN` or `TINYFS1.BIN`. It rejects malformed nodes, cycles, invalid names, checksum errors, and case-insensitive sibling collisions. Import materializes and verifies individual entries first, commits the direct-format marker, and only then attempts to remove both legacy files. Firmware deletion failures may leave stale import files, but a durable `TINYFS.RET` retirement marker outside the direct namespace prevents them from becoming authority again even if `FORMAT.DAT` is later damaged. If allocation, write, flush, rename, or verification fails before marker and retirement commit, legacy files remain available for a later retry or explicit recovery. Once direct activation completes, direct FAT storage wins and legacy files are not treated as live authority.
+
+## Direct FAT filesystem and the shell
+
+The shell maps `/` to `TINYGPTFS/ROOT` on the selected system partition. Each logical file or directory is an individual authoritative FAT entry accessed with UEFI `EFI_FILE_PROTOCOL`; the 96-entry in-memory table contains metadata only, and file bytes are read on demand into bounded command/editor buffers. Paths support absolute and relative forms, `~`, `cd -`, nested directories, and files up to 8191 bytes. FAT names are matched case-insensitively, and invalid, colliding, oversized, or over-capacity trees fail scanning instead of being ignored. File hashes shown by `stat` are observational values refreshed from current FAT content during scanning, not persisted trust anchors capable of detecting historical content drift.
+
+File replacement writes, verifies, and flushes `TINYGPTFS/TXN.NEW`, records `TINYGPTFS/TXN.CMT`, preserves the prior entry as `TINYGPTFS/TXN.PREV`, and then promotes the new file. Failed writes are reported and do not claim persistence. Boot recovery uses redundant manifests to resolve an interrupted journal before mounting; torn manifests with no moved payload are discarded, while irrecoverably corrupt manifests with a recovery payload are preserved and require explicit `reset` rather than risking silent data loss. Recursive deletion is journaled and resumed rather than backed by a complete second tree. Consequently, the old whole-filesystem `rollback N` capability is intentionally unavailable; `repair` recovers transactions and restores protected defaults without overwriting user files, while `reset` explicitly reinstalls defaults.
 
 ### Filesystem commands
 
@@ -151,7 +161,7 @@ protect lock
 
 Unlocking lasts only for the current boot. Creation, writes, copies, moves, renames, and removals all enforce ancestor protection.
 
-After protection is unlocked, exact `rm -rf /` erases the system partition but does not power off the machine. The already-loaded shell keeps running from RAM without persistent storage until it crashes, is rebooted, or is shut down. The isolated pre-OS environment opens on the next boot.
+After protection is unlocked, exact `rm -rf /` erases the system partition but does not power off the machine. A partial firmware deletion keeps the volume open so the command can be retried; a complete wipe disables further persistence for that running shell. The isolated pre-OS environment opens on the next boot.
 
 ### Text Editor
 
@@ -257,7 +267,7 @@ chmod +x tinygpt
 ./tinygpt update --channel nightly /path/to/TinyGPT.img
 ```
 
-The host command uses Python's HTTPS stack and changes only `EFI/BOOT/BOOTAA64.EFI` on the recovery partition. MiniFS2 snapshots, settings, user files, other partitions, and Freedoom remain intact. A backup is created before replacement.
+The host command uses Python's HTTPS stack and changes only `EFI/BOOT/BOOTAA64.EFI` on the recovery partition. Direct filesystem entries, settings, user files, other partitions, and Freedoom remain intact. A backup is created before replacement.
 
 ## Build and test
 
