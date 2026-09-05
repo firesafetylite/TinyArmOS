@@ -190,13 +190,6 @@ typedef struct {
     char url[UPDATE_MAX_URL_BYTES];
 } UPDATE_MANIFEST;
 
-typedef struct {
-    UINT32 state[8];
-    UINT64 bitLength;
-    UINT8 block[64];
-    UINTN blockLength;
-} UPDATE_SHA256;
-
 static EFI_GUID gUpdateIp4Config2ProtocolGuid = {
     0x5b446ed1, 0xe30b, 0x4faa, {0x87,0x1a,0x36,0x54,0xec,0xa3,0x60,0x80}
 };
@@ -216,136 +209,6 @@ static const CHAR16 gUpdateBackupPath[] = {
 static const CHAR16 gUpdateStagePath[] = {
     '\\','E','F','I','\\','B','O','O','T','\\','B','O','O','T','A','A','6','4','.','N','E','W',0
 };
-
-static UINT32 update_rotr32(UINT32 value, UINT32 count) {
-    return (value >> count) | (value << (32U - count));
-}
-
-static void update_sha256_transform(UPDATE_SHA256 *context, const UINT8 *block) {
-    static const UINT32 constants[64] = {
-        0x428a2f98U,0x71374491U,0xb5c0fbcfU,0xe9b5dba5U,0x3956c25bU,0x59f111f1U,0x923f82a4U,0xab1c5ed5U,
-        0xd807aa98U,0x12835b01U,0x243185beU,0x550c7dc3U,0x72be5d74U,0x80deb1feU,0x9bdc06a7U,0xc19bf174U,
-        0xe49b69c1U,0xefbe4786U,0x0fc19dc6U,0x240ca1ccU,0x2de92c6fU,0x4a7484aaU,0x5cb0a9dcU,0x76f988daU,
-        0x983e5152U,0xa831c66dU,0xb00327c8U,0xbf597fc7U,0xc6e00bf3U,0xd5a79147U,0x06ca6351U,0x14292967U,
-        0x27b70a85U,0x2e1b2138U,0x4d2c6dfcU,0x53380d13U,0x650a7354U,0x766a0abbU,0x81c2c92eU,0x92722c85U,
-        0xa2bfe8a1U,0xa81a664bU,0xc24b8b70U,0xc76c51a3U,0xd192e819U,0xd6990624U,0xf40e3585U,0x106aa070U,
-        0x19a4c116U,0x1e376c08U,0x2748774cU,0x34b0bcb5U,0x391c0cb3U,0x4ed8aa4aU,0x5b9cca4fU,0x682e6ff3U,
-        0x748f82eeU,0x78a5636fU,0x84c87814U,0x8cc70208U,0x90befffaU,0xa4506cebU,0xbef9a3f7U,0xc67178f2U
-    };
-    UINT32 words[64];
-    UINT32 a;
-    UINT32 b;
-    UINT32 c;
-    UINT32 d;
-    UINT32 e;
-    UINT32 f;
-    UINT32 g;
-    UINT32 h;
-    UINT32 index;
-    for (index = 0; index < 16U; index++) {
-        UINTN offset = (UINTN)index * 4U;
-        words[index] = ((UINT32)block[offset] << 24) |
-                       ((UINT32)block[offset + 1U] << 16) |
-                       ((UINT32)block[offset + 2U] << 8) |
-                       (UINT32)block[offset + 3U];
-    }
-    for (index = 16U; index < 64U; index++) {
-        UINT32 s0 = update_rotr32(words[index - 15U], 7U) ^
-                    update_rotr32(words[index - 15U], 18U) ^
-                    (words[index - 15U] >> 3U);
-        UINT32 s1 = update_rotr32(words[index - 2U], 17U) ^
-                    update_rotr32(words[index - 2U], 19U) ^
-                    (words[index - 2U] >> 10U);
-        words[index] = words[index - 16U] + s0 + words[index - 7U] + s1;
-    }
-    a = context->state[0];
-    b = context->state[1];
-    c = context->state[2];
-    d = context->state[3];
-    e = context->state[4];
-    f = context->state[5];
-    g = context->state[6];
-    h = context->state[7];
-    for (index = 0; index < 64U; index++) {
-        UINT32 sum1 = update_rotr32(e, 6U) ^ update_rotr32(e, 11U) ^ update_rotr32(e, 25U);
-        UINT32 choose = (e & f) ^ ((~e) & g);
-        UINT32 temp1 = h + sum1 + choose + constants[index] + words[index];
-        UINT32 sum0 = update_rotr32(a, 2U) ^ update_rotr32(a, 13U) ^ update_rotr32(a, 22U);
-        UINT32 majority = (a & b) ^ (a & c) ^ (b & c);
-        UINT32 temp2 = sum0 + majority;
-        h = g;
-        g = f;
-        f = e;
-        e = d + temp1;
-        d = c;
-        c = b;
-        b = a;
-        a = temp1 + temp2;
-    }
-    context->state[0] += a;
-    context->state[1] += b;
-    context->state[2] += c;
-    context->state[3] += d;
-    context->state[4] += e;
-    context->state[5] += f;
-    context->state[6] += g;
-    context->state[7] += h;
-}
-
-static void update_sha256_init(UPDATE_SHA256 *context) {
-    context->state[0] = 0x6a09e667U;
-    context->state[1] = 0xbb67ae85U;
-    context->state[2] = 0x3c6ef372U;
-    context->state[3] = 0xa54ff53aU;
-    context->state[4] = 0x510e527fU;
-    context->state[5] = 0x9b05688cU;
-    context->state[6] = 0x1f83d9abU;
-    context->state[7] = 0x5be0cd19U;
-    context->bitLength = 0;
-    context->blockLength = 0;
-}
-
-static void update_sha256_add(UPDATE_SHA256 *context, const UINT8 *data, UINTN bytes) {
-    UINTN index;
-    for (index = 0; index < bytes; index++) {
-        context->block[context->blockLength++] = data[index];
-        if (context->blockLength == 64U) {
-            update_sha256_transform(context, context->block);
-            context->bitLength += 512U;
-            context->blockLength = 0;
-        }
-    }
-}
-
-static void update_sha256_finish(UPDATE_SHA256 *context, UINT8 digest[32]) {
-    UINTN index = context->blockLength;
-    UINT64 totalBits;
-    context->block[index++] = 0x80U;
-    if (index > 56U) {
-        while (index < 64U) context->block[index++] = 0;
-        update_sha256_transform(context, context->block);
-        index = 0;
-    }
-    while (index < 56U) context->block[index++] = 0;
-    totalBits = context->bitLength + (UINT64)context->blockLength * 8U;
-    for (index = 0; index < 8U; index++) {
-        context->block[63U - index] = (UINT8)(totalBits >> (index * 8U));
-    }
-    update_sha256_transform(context, context->block);
-    for (index = 0; index < 8U; index++) {
-        digest[index * 4U] = (UINT8)(context->state[index] >> 24);
-        digest[index * 4U + 1U] = (UINT8)(context->state[index] >> 16);
-        digest[index * 4U + 2U] = (UINT8)(context->state[index] >> 8);
-        digest[index * 4U + 3U] = (UINT8)context->state[index];
-    }
-}
-
-static void update_sha256_bytes(const UINT8 *data, UINTN bytes, UINT8 digest[32]) {
-    UPDATE_SHA256 context;
-    update_sha256_init(&context);
-    update_sha256_add(&context, data, bytes);
-    update_sha256_finish(&context, digest);
-}
 
 static char update_ascii_lower(char value) {
     if (value >= 'A' && value <= 'Z') return (char)(value + ('a' - 'A'));
@@ -954,13 +817,13 @@ static EFI_STATUS update_read_file(const CHAR16 *path, UINT8 *data, UINTN capaci
 
 static EFI_STATUS update_hash_file(const CHAR16 *path, UINTN *fileSize, UINT8 digest[32]) {
     EFI_FILE_PROTOCOL *file = (EFI_FILE_PROTOCOL *)0;
-    UPDATE_SHA256 sha;
+    SHA256_CONTEXT sha;
     UINT8 buffer[4096];
     EFI_STATUS status;
     UINTN total = 0;
     status = gBootVolumeRoot->Open(gBootVolumeRoot, &file, (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
     if (status != EFI_SUCCESS || !file) return status;
-    update_sha256_init(&sha);
+    sha256_init(&sha);
     for (;;) {
         UINTN chunk = sizeof(buffer);
         status = file->Read(file, &chunk, buffer);
@@ -969,12 +832,12 @@ static EFI_STATUS update_hash_file(const CHAR16 *path, UINTN *fileSize, UINT8 di
             status = EFI_OUT_OF_RESOURCES;
             break;
         }
-        update_sha256_add(&sha, buffer, chunk);
+        sha256_add(&sha, buffer, chunk);
         total += chunk;
     }
     file->Close(file);
     if (status != EFI_SUCCESS) return status;
-    update_sha256_finish(&sha, digest);
+    sha256_finish(&sha, digest);
     *fileSize = total;
     return EFI_SUCCESS;
 }
@@ -1045,7 +908,6 @@ static void command_update(int checkOnly, int nightly) {
     UINT8 actualDigest[32];
     UPDATE_MANIFEST manifest;
     EFI_STATUS status;
-    char answer[32];
     print("Checking the ");
     print(channelName);
     print(" update channel over firmware HTTPS...\n");
@@ -1098,12 +960,7 @@ static void command_update(int checkOnly, int nightly) {
         print("' to install it.\n");
         goto cleanup;
     }
-    print("Download and install this update? Type UPDATE: ");
-    read_line(answer, sizeof(answer));
-    if (!streq(answer, "UPDATE")) {
-        print("update cancelled\n");
-        goto cleanup;
-    }
+    if (!auth_authorize_admin("update installation")) goto cleanup;
     status = gST->BootServices->AllocatePool(2, manifest.size, (void **)&image);
     if (status != EFI_SUCCESS || !image) {
         update_print_status("Image allocation", EFI_OUT_OF_RESOURCES);
@@ -1117,7 +974,7 @@ static void command_update(int checkOnly, int nightly) {
         update_print_status("Update download", status);
         goto cleanup;
     }
-    update_sha256_bytes(image, imageSize, actualDigest);
+    sha256_bytes(image, imageSize, actualDigest);
     if (imageSize != manifest.size || !update_digest_equal(actualDigest, manifest.digest) ||
         !update_valid_efi(image, imageSize)) {
         update_print_status("Image verification", EFI_SECURITY_VIOLATION);
@@ -1132,12 +989,6 @@ static void command_update(int checkOnly, int nightly) {
     print("TinyGPT ");
     print(nightly ? "nightly" : manifest.version);
     print(" installed.\nThe running shell remains TinyGPT " TINYGPT_DISPLAY_VERSION " until reboot.\n");
-    print("Type REBOOT to restart now: ");
-    read_line(answer, sizeof(answer));
-    if (streq(answer, "REBOOT")) {
-        gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, (void *)0);
-        for (;;) __asm__ volatile("wfe");
-    }
     print("Run 'reboot' before continuing normal use.\n");
 cleanup:
     if (image) gST->BootServices->FreePool(image);

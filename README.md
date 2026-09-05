@@ -12,13 +12,28 @@
 
 > TinyGPT is the project name; the operating system is not a language model. The disk image does use a standard GUID Partition Table (GPT).
 
+## Native firmware migration (unreleased)
+
+`make native` now builds a TinyGPT-owned BIOS, a separately loaded `TINYGPT.ELF`
+OS, and a factory disk, with **no EDK II dependency**. The native target has
+firmware-resident recovery, writable FAT, graphical/serial consoles, VirtIO
+keyboard input, accounts, and Settings. Its disposable-disk lifecycle and
+custom-colored scrollback are tested with `make native-test`.
+
+See [native firmware setup, validation, and migration limits](firmware/native/README.md).
+Existing VMs need a clean shutdown, a fresh full backup, matching BIOS/ELF images,
+and supported hardware configuration—not just a firmware-file swap. Native
+HTTP/TLS updates are not implemented. The release/download instructions below
+still describe the existing EFI distribution, not an already deployed migration.
+
 ## Highlights
 
 - Boots as a native AArch64 UEFI application
 - Ships as one 128 MiB GPT/FAT disk image
 - Stores each shell file and directory as an authoritative FAT entry under `TINYGPTFS/ROOT`
 - Verifies the filesystem and operating system before every normal boot
-- Keeps recovery tools on a protected partition that survives an OS wipe
+- Keeps recovery tools and the global account database on a protected partition that survives an OS wipe
+- Requires password login on every normal boot and administrator re-authentication for privileged writes
 - Supports multiple bootable system/data partitions
 - Includes protected `/system`, `/apps`, and `/lost+found` trees
 - Provides a full-screen text editor, persistent settings, and 256-line scrollback
@@ -58,7 +73,8 @@ Important files include:
 
 ```text
 Partition 1: TINYRECOV
-└── EFI/BOOT/BOOTAA64.EFI
+├── EFI/BOOT/BOOTAA64.EFI
+└── TINYAUTH0.DAT / TINYAUTH1.DAT  redundant global account generations
 
 Partition 2: TINYGPT
 ├── TINYGPT.NEW              first-boot installation marker (removed after install)
@@ -89,23 +105,25 @@ The pre-OS environment supports:
 ```text
 partitions                     list registered GPT partitions
 partition add MIB NAME         create a named FAT partition (minimum 4 MiB)
+partition delete N             delete managed partition metadata after administrator authentication
 partition name N NAME          rename a non-protected partition
 use N                          select a partition for file navigation
 order N                        save a partition as the default
 scan N                         verify direct FAT entries and transaction state
-repair N                       recover or install TinyGPT on a partition
-rollback N                     report that whole-filesystem rollback is retired
+repair N                       recover or install TinyGPT after administrator authentication
 pwd / ls / cd                  navigate the selected partition
 cat / stat / tree              inspect files and metadata
-reset N                        reset and reinstall after confirmation
+reset N                        reset and reinstall after administrator authentication
 scroll / scroll clear          inspect or clear recovery scrollback
 boot [N]                       verify and start a partition
 reboot / shutdown              restart or power off
 ```
 
-Names may contain 1–11 letters, digits, underscores, or hyphens. They are normalized to uppercase and must be unique. A newly created partition is activated after one required firmware reboot, then TinyGPT initializes it automatically.
+Names may contain 1–11 letters, digits, underscores, or hyphens. They are normalized to uppercase and must be unique. Allocation uses aligned first-fit space, so a deleted partition's extent can be reused without overlapping existing entries or GPT-reserved sectors. A newly created partition is activated after one required firmware reboot, then TinyGPT initializes it automatically.
 
-The regular shell's `partitions` command is read-only. Partition creation, naming, repair, reset, rollback-status reporting, boot-order changes, and recovery-partition access remain pre-OS-only.
+`partition delete N` accepts only a registered TinyGPT-managed FAT entry whose GPT and FAT labels match the registry. Partition 1 and its recovery volume can never be deleted. The command displays the label and extent and requires an administrator username and password. Deletion clears only the 128-byte GPT entry, freeing the extent; it does **not** overwrite partition contents and is not secure erasure. After any GPT change, reboot before another partition change, selection, or boot because firmware filesystem enumeration is stale. A registry-cleanup failure is reported as a committed deletion and the slot must not be reused before recovery.
+
+The regular shell's `partitions` command is read-only. Partition creation, deletion, naming, repair, reset, boot-order changes, and recovery-partition access remain pre-OS-only.
 
 ### One-time legacy import
 
@@ -115,7 +133,7 @@ When no valid `TINYGPTFS/FORMAT.DAT` exists, TinyGPT may import the newest fully
 
 The shell maps `/` to `TINYGPTFS/ROOT` on the selected system partition. Each logical file or directory is an individual authoritative FAT entry accessed with UEFI `EFI_FILE_PROTOCOL`; the 96-entry in-memory table contains metadata only, and file bytes are read on demand into bounded command/editor buffers. Paths support absolute and relative forms, `~`, `cd -`, nested directories, and files up to 8191 bytes. FAT names are matched case-insensitively, and invalid, colliding, oversized, or over-capacity trees fail scanning instead of being ignored. File hashes shown by `stat` are observational values refreshed from current FAT content during scanning, not persisted trust anchors capable of detecting historical content drift.
 
-File replacement writes, verifies, and flushes `TINYGPTFS/TXN.NEW`, records `TINYGPTFS/TXN.CMT`, preserves the prior entry as `TINYGPTFS/TXN.PREV`, and then promotes the new file. Failed writes are reported and do not claim persistence. Boot recovery uses redundant manifests to resolve an interrupted journal before mounting; torn manifests with no moved payload are discarded, while irrecoverably corrupt manifests with a recovery payload are preserved and require explicit `reset` rather than risking silent data loss. Recursive deletion is journaled and resumed rather than backed by a complete second tree. Consequently, the old whole-filesystem `rollback N` capability is intentionally unavailable; `repair` recovers transactions and restores protected defaults without overwriting user files, while `reset` explicitly reinstalls defaults.
+File replacement writes, verifies, and flushes `TINYGPTFS/TXN.NEW`, records `TINYGPTFS/TXN.CMT`, preserves the prior entry as `TINYGPTFS/TXN.PREV`, and then promotes the new file. Failed writes are reported and do not claim persistence. Boot recovery uses redundant manifests to resolve an interrupted journal before mounting; torn manifests with no moved payload are discarded, while irrecoverably corrupt manifests with a recovery payload are preserved and require explicit `reset` rather than risking silent data loss. Recursive deletion is journaled and resumed rather than backed by a complete second tree. `repair` recovers transactions and restores protected defaults without overwriting user files, while `reset` explicitly reinstalls defaults.
 
 ### Filesystem commands
 
@@ -148,20 +166,21 @@ cat /home/projects/hello.txt
 cp /home/projects/hello.txt /tmp
 ```
 
-### Protected system trees
+### Accounts and protected system trees
 
-The `/system`, `/apps`, and `/lost+found` trees are locked at every boot. They remain readable while locked.
+On the first successful boot, TinyGPT asks for a username and a password twice. This first account is always an Administrator. Every later normal boot requires login; unknown usernames never create accounts. Password input is masked. Usernames contain 1–23 letters, digits, underscores, or hyphens and are case-insensitive; passwords contain 8–64 printable ASCII characters and are case-sensitive. Overlong input is rejected, not truncated. Up to eight accounts are supported.
 
-```text
-protect status
-protect unlock
-# Type: UNLOCK
-protect lock
-```
+Open `settings`, then choose **8 — User accounts**. This page lists accounts and roles and lets you change your password. Administrators also see options to add an account (Standard or Administrator), change another user's password, and delete an account. Account changes still require password verification. Choose **0** to return to Settings; the shell's `logout` command returns to login.
 
-Unlocking lasts only for the current boot. Creation, writes, copies, moves, renames, and removals all enforce ancestor protection.
+Administrators can add and delete accounts and change another user's password. Standard users can change their own password. Ordinary non-protected files are shared because this filesystem has no ownership metadata. TinyGPT prevents deletion of the active account and the last administrator. Accounts are global across system partitions and are stored in redundant checksum-validated generations on `TINYRECOV`; passwords use per-account salts and 4096-round SHA-256 derivation and are never stored directly. UEFI RNG supplies salts when available; a bounded timer/generation/counter SHA-256 fallback prevents duplicate salts when firmware has no RNG.
 
-After protection is unlocked, exact `rm -rf /` erases the system partition but does not power off the machine. A partial firmware deletion keeps the volume open so the command can be retried; a complete wipe disables further persistence for that running shell. The isolated pre-OS environment opens on the next boot.
+The slot checksums and generations detect torn writes and select the newest locally available copy; falling back to an older copy can also restore older credentials. Only explicit file-not-found results permit fresh setup. Read failures do not imply missing accounts, and a failed account write/flush blocks further authentication until reboot rather than claiming persistence.
+
+This is shell-level access control, not disk encryption or verified boot. Checksums are unkeyed: offline disk access can alter or replay accounts, or erase both slots to restart setup. The 4096-round derivation is not a modern memory-hard password KDF, and fallback salts are not cryptographically random. Protect recovery-volume access and use a unique password, not credentials reused elsewhere.
+
+The `/system`, `/apps`, and `/lost+found` trees remain readable to every account. Writes require an Administrator and password re-authentication for each privileged operation. Partition changes, repair/reset, updates, and exact `rm -rf /` use the same re-authentication rule. Pre-OS asks for an administrator username and password because it has no logged-in session; only an absent or valid zero-account database may start first-administrator setup, while corrupt authentication data fails closed.
+
+After administrator re-authentication, exact `rm -rf /` erases the system partition but does not power off the machine. A partial firmware deletion keeps the volume open so the command can be retried; a complete wipe disables further persistence for that running shell. The isolated pre-OS environment opens on the next boot.
 
 ### Text Editor
 
@@ -172,7 +191,7 @@ textedit /home/notes/todo.txt
 textedit
 ```
 
-The editor soft-wraps without inserting extra newlines. Arrow keys move through characters and wrapped display rows, Backspace/Delete removes text, and Enter inserts a line break. Press **F2** or **Ctrl+S** to save; press Esc twice to discard unsaved changes. Protected files open read-only until protection is unlocked.
+The editor soft-wraps without inserting extra newlines. Arrow keys move through characters and wrapped display rows, Backspace/Delete removes text, and Enter inserts a line break. Press **F2** or **Ctrl+S** to save; press Esc twice to discard unsaved changes. Protected files open read-only for standard users; an Administrator must re-authenticate when saving.
 
 ### Settings
 
@@ -183,8 +202,9 @@ Run `settings` for the full-screen configuration interface. It controls:
 - Whether the current path appears in the prompt
 - Whether the shell starts in `/` or `/home`
 - Whether 256-line scrollback is enabled
+- **User accounts**: account list, password changes, and administrator-only account creation/deletion
 
-Changes save automatically to `/home/.tinygptrc` and survive reboots and OS updates.
+Appearance and shell preferences save automatically to `/home/.tinygptrc`. **Settings > User accounts** saves separately to the protected recovery-volume account database, never to `.tinygptrc`. Restoring appearance and shell defaults does not reset accounts or passwords.
 
 ### Scrollback
 
@@ -212,7 +232,7 @@ uptime
 partitions
 textedit [PATH]
 settings
-protect [status|unlock|lock]
+logout
 update [check] [main|nightly]
 doom
 reboot
@@ -269,6 +289,10 @@ chmod +x tinygpt
 
 The host command uses Python's HTTPS stack and changes only `EFI/BOOT/BOOTAA64.EFI` on the recovery partition. Direct filesystem entries, settings, user files, other partitions, and Freedoom remain intact. A backup is created before replacement.
 
+## Standalone firmware development
+
+An **EDK-II-free firmware prototype** is being developed in [`firmware/bios`](firmware/bios/README.md). `make bios` builds its own ARM64 reset code and firmware-resident serial recovery menu; `make bios-test` boots it in isolated QEMU with synthetic read-only disks. It can inspect GPT/FAT and boot a small native ELF payload, but **cannot yet boot the current TinyGPT EFI system or replace the full pre-OS environment**. The working VM and EDK II build remain unchanged until storage, graphics/input, accounts, and the OS have been ported. Do not install this prototype over the working VM firmware.
+
 ## Build and test
 
 Requirements:
@@ -295,7 +319,7 @@ build/TinyGPT.img
 
 `build.sh` compiles the freestanding C source, creates the recovery and system partitions, embeds Freedoom, and writes the canonical 128 MiB image. The image builder and host updater use only Python's standard library.
 
-CI checks the Python tools and source invariants, verifies that the EFI output is an AArch64 PE32+ application, validates the GPT/FAT layout, and confirms the embedded EFI and Freedoom data. Changes to boot or runtime behavior should also be tested in an ARM64 UEFI VM when practical.
+CI checks the Python tools and source invariants, executes the production authentication code against a fake UEFI console/filesystem, and tests the production FAT path builders. Native tests require a host C compiler (`cc`) and explicitly skip when unavailable. CI also verifies that the EFI output is an AArch64 PE32+ application, validates the GPT/FAT layout, and confirms the embedded EFI and Freedoom data. These tests do not replace ARM64 UEFI VM testing of login, recovery, or real firmware flush/power-loss behavior.
 
 The optional `tools/build_uefi_firmware.sh` script builds the custom HTTP/TLS-capable developer firmware. Run `make clean` to remove generated output; everything under `build/` is ignored by Git.
 

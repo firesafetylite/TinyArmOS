@@ -9,6 +9,8 @@ SOURCE = (ROOT / "src" / "uefi.c").read_text(encoding="utf-8")
 UPDATE_SOURCE = (ROOT / "src" / "update.inc").read_text(encoding="utf-8")
 PARTITION_SOURCE = (ROOT / "src" / "partition.inc").read_text(encoding="utf-8")
 EDITOR_SOURCE = (ROOT / "src" / "editor.inc").read_text(encoding="utf-8")
+AUTH_SOURCE = (ROOT / "src" / "auth.inc").read_text(encoding="utf-8")
+ACCOUNT_SETTINGS_SOURCE = (ROOT / "src" / "account_settings.inc").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 BUILD_SCRIPT = (ROOT / "build.sh").read_text(encoding="utf-8")
 IMAGE_SOURCE = (ROOT / "tools" / "make_image.py").read_text(encoding="utf-8")
@@ -63,7 +65,7 @@ class ShellSourceTests(unittest.TestCase):
             "textedit [PATH]",
             "doom",
             "settings",
-            "protect [status|unlock|lock]",
+            "logout",
             "update [check] [main|nightly]",
             "reboot",
             "shutdown",
@@ -86,12 +88,12 @@ class ShellSourceTests(unittest.TestCase):
             "help",
             "partitions",
             "partition add MIB NAME",
+            "partition delete N",
             "partition name N NAME",
             "use N",
             "order N",
             "scan N",
             "repair N",
-            "rollback N",
             "pwd",
             "ls [PATH]",
             "cd [PATH|-]",
@@ -130,7 +132,7 @@ class ShellSourceTests(unittest.TestCase):
         entry = source_block("EFI_STATUS EFIAPI EfiMain", "for (;;) {")
         menu = source_block("static void pre_os_draw_boot_menu", "static int boot_screen")
         self.assertIn("Up/Down select, Enter boot, S save default, R recovery", menu)
-        self.assertIn("Press Enter to interrupt boot and open the partition menu", menu)
+        self.assertIn("Press Enter for the partition menu, or Esc / R for firmware recovery", menu)
         self.assertIn("boot_order_save(selected)", menu)
         self.assertIn("ClearScreen", menu)
         self.assertIn("pre_os_draw_boot_menu(selected", menu)
@@ -291,7 +293,7 @@ class ShellSourceTests(unittest.TestCase):
         pre_os = source_block(
             "static void pre_os_environment(void)", "static void command_help(void)"
         )
-        for command in ("scan", "repair", "rollback", "reset"):
+        for command in ("scan", "repair", "reset"):
             with self.subTest(command=command):
                 self.assertIn(f'starts_with(line, "{command} ")', pre_os)
                 self.assertIn(
@@ -301,6 +303,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("partition < 2U", PARTITION_SOURCE)
         self.assertIn("partition_add(mebibytes", pre_os)
         self.assertIn("partition_rename(partition", pre_os)
+        self.assertIn("partition_delete(partition", pre_os)
         self.assertIn("gFatPartitionGuid", PARTITION_SOURCE)
         self.assertIn("partition_format_fat16", PARTITION_SOURCE)
         repair = source_block("static int pre_os_repair(", "static void pre_os_print_partitions(")
@@ -313,7 +316,93 @@ class ShellSourceTests(unittest.TestCase):
             PARTITION_SOURCE.index("disk->primaryEntriesLba", PARTITION_SOURCE.index("static int partition_disk_commit")),
         )
 
-    def test_image_reserves_append_only_partition_space(self) -> None:
+    def test_partition_delete_is_pre_os_only_and_password_authorized(self) -> None:
+        help_text = source_block("static void pre_os_help(void)", "static void pre_os_environment(void)")
+        pre_os = source_block("static void pre_os_environment(void)", "static void command_help(void)")
+        shell = source_block("static void run_command(char *line)", "__attribute__((used))")
+        self.assertIn("partition delete N", help_text)
+        self.assertIn('starts_with(line, "partition delete ")', pre_os)
+        self.assertIn('auth_pre_os_authorize_admin("partition delete")', pre_os)
+        self.assertNotIn("DELETE PARTITION", pre_os)
+        self.assertNotIn("streq(answer, expected)", pre_os)
+        self.assertIn("not secure erasure", pre_os)
+        self.assertIn("Reboot required", pre_os)
+        self.assertNotIn("partition_delete", shell)
+
+    def test_partition_delete_checks_ownership_and_clears_only_the_entry(self) -> None:
+        validator = PARTITION_SOURCE.split("static int partition_entry_is_managed_fat", 1)[1].split(
+            "static int partition_delete_validate", 1
+        )[0]
+        deletion = PARTITION_SOURCE.split("static int partition_delete(UINTN partition)", 1)[1].split(
+            "static int partition_add", 1
+        )[0]
+        self.assertIn("partition < 2U", validator)
+        self.assertIn("gPartitionNames[partition - 1U][0]", validator)
+        self.assertIn("gFatPartitionGuid", validator)
+        self.assertIn("partition_gpt_name_matches", validator)
+        self.assertIn("partition_fat_label_matches", validator)
+        self.assertIn("partition_table_extents_valid", validator)
+        self.assertIn("boot_order_save(fallback)", deletion)
+        self.assertLess(deletion.index("boot_order_save(fallback)"), deletion.index("partition_disk_commit"))
+        self.assertLess(deletion.index("removedRoot->Close"), deletion.index("partition_disk_commit"))
+        self.assertIn("gPartitionRoots[partition - 1U] = (EFI_FILE_PROTOCOL *)0", deletion)
+        self.assertIn("memory_zero(entry, GPT_ENTRY_SIZE)", deletion)
+        self.assertLess(deletion.index("partition_disk_commit"), deletion.index("partition_registry_save"))
+        self.assertIn("gActivePartition == partition", deletion)
+        self.assertIn("memory_zero(gNodes", deletion)
+
+    def test_mirrored_gpt_commit_verifies_backup_before_primary(self) -> None:
+        opened = PARTITION_SOURCE.split("static int partition_disk_open", 1)[1].split(
+            "static void partition_refresh_header_crc", 1
+        )[0]
+        commit = PARTITION_SOURCE.split("static int partition_disk_commit", 1)[1].split(
+            "static int partition_label_valid", 1
+        )[0]
+        self.assertIn("disk->backupEntriesLba", opened)
+        self.assertIn("!partition_bytes_equal(disk->entries, disk->originalEntries", opened)
+        self.assertLess(commit.index("disk->backupEntriesLba"), commit.index("disk->primaryEntriesLba"))
+        self.assertLess(commit.index("FlushBlocks"), commit.index("disk->primaryEntriesLba"))
+        self.assertIn("partition_copy_matches", commit)
+        self.assertIn("gPartitionError = 31U", commit)
+
+    def test_partition_add_uses_validated_aligned_first_fit(self) -> None:
+        first_fit = PARTITION_SOURCE.split("static int partition_first_fit", 1)[1].split(
+            "static int partition_gpt_name_matches", 1
+        )[0]
+        add = PARTITION_SOURCE.split("static int partition_add", 1)[1].split(
+            "static const char *partition_error_text", 1
+        )[0]
+        self.assertIn("partition_table_extents_valid", first_fit)
+        self.assertIn("partition_align_lba", first_fit)
+        self.assertIn("sectors <= nextStart - cursor", first_fit)
+        self.assertIn("sectors - 1U <= lastUsable - cursor", first_fit)
+        self.assertIn("partition_first_fit(&disk, sectors, &start)", add)
+        self.assertIn("for (index = 1U;", add)
+        self.assertNotIn("for (index = 2U;", add)
+        self.assertNotIn("maxEnd", add)
+
+    def test_definite_delete_commit_failure_requires_reboot_after_handle_close(self) -> None:
+        deletion = PARTITION_SOURCE.split("static int partition_delete(UINTN partition)", 1)[1].split(
+            "static int partition_add", 1
+        )[0]
+        errors = PARTITION_SOURCE.split("static const char *partition_error_text", 1)[1].split(
+            "static int partition_update_fat_label", 1
+        )[0]
+        failure = deletion.split("if (!partition_disk_commit(&disk))", 1)[1].split(
+            "partition_disk_close(&disk);", 1
+        )[1].split("return 0;", 1)[0]
+        self.assertIn("gPartitionRebootRequired = 1U", failure)
+        self.assertIn("target handle is closed; reboot required", errors)
+
+    def test_obsolete_pre_os_rollback_command_is_removed(self) -> None:
+        help_text = source_block("static void pre_os_help(void)", "static void pre_os_environment(void)")
+        pre_os = source_block("static void pre_os_environment(void)", "static void command_help(void)")
+        self.assertNotIn("rollback N", help_text)
+        self.assertNotIn('starts_with(line, "rollback ")', pre_os)
+        self.assertNotIn("storage_rollback", SOURCE)
+        self.assertNotIn("rollback N", README)
+
+    def test_image_reserves_partition_expansion_space(self) -> None:
         self.assertIn("IMAGE_BYTES = 128 * 1024 * 1024", IMAGE_SOURCE)
         self.assertIn("SYSTEM_LAST = 131038", IMAGE_SOURCE)
         self.assertIn("format_system_fat32(image, SYSTEM_LAST", IMAGE_SOURCE)
@@ -382,7 +471,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("ascii_case_equal", SOURCE)
         cache = SOURCE.split("/* A bounded, rebuildable metadata cache.", 1)[1].split("} FS_NODE;", 1)[0]
         self.assertNotIn("data[FS_DATA_BYTES]", cache)
-        self.assertIn("whole-filesystem snapshots were retired", SOURCE)
+        self.assertNotIn("storage_rollback", SOURCE)
         writer = source_block("static int storage_write_exact(", "static int storage_read_transaction(")
         self.assertIn("bytes == length", writer)
         self.assertIn("file->Flush(file)", writer)
@@ -399,7 +488,10 @@ class ShellSourceTests(unittest.TestCase):
         scanner = source_block("static int storage_scan_directory(", "static int storage_scan_direct(")
         self.assertIn("!(entries[index].attribute & EFI_FILE_DIRECTORY)", scanner)
         boot = source_block("static int boot_screen(", "static void pre_os_help(")
-        self.assertIn("fs_restore_system();", boot)
+        self.assertNotIn("fs_restore_system();", boot)
+        self.assertIn("if (!mounted && !legacyFiles && factoryInstall)", boot)
+        self.assertIn("fs_format();", boot)
+        self.assertIn("RECOVERY REQUIRED - OPENING PRE-OS ENVIRONMENT", boot)
         restore = source_block("static int fs_restore_system(void)", "static void fs_format(void)")
         self.assertIn('fs_find_child((UINTN)runtime, "minifs2.info")', restore)
         self.assertIn('fs_find_child((UINTN)runtime, "snapshots.info")', restore)
@@ -418,7 +510,7 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("background_color", SOURCE)
         self.assertIn("settings_text_attribute", settings_ui)
         self.assertIn("color == gSettings.textColor || color == gSettings.accentColor", settings_ui)
-        self.assertIn("Unknown selection; choose 0 through 7.", settings_ui)
+        self.assertIn("Unknown selection; choose 0 through 8.", settings_ui)
         self.assertIn("Invalid background; choose 1 through 8.", settings_ui)
         self.assertIn("gST->ConOut->ClearScreen", settings_ui)
         self.assertIn("settings_save_notice()", settings_ui)
@@ -444,6 +536,58 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("update_digest_equal(currentDigest, manifest.digest)", UPDATE_SOURCE)
         self.assertIn("TINYGPT_DISPLAY_VERSION", UPDATE_SOURCE)
         self.assertIn('TINYGPT_BUILD_CHANNEL "main"', SOURCE)
+
+    def test_global_authentication_is_redundant_hashed_and_fail_closed(self) -> None:
+        self.assertIn("gBootVolumeRoot", AUTH_SOURCE)
+        self.assertIn("gAuthSlot0Path", AUTH_SOURCE)
+        self.assertIn("gAuthSlot1Path", AUTH_SOURCE)
+        self.assertIn("generation", AUTH_SOURCE)
+        self.assertIn("AUTH_DB_CORRUPT", AUTH_SOURCE)
+        self.assertIn("adminCount", AUTH_SOURCE)
+        self.assertIn("database->accountCount == 0U || adminCount > 0U", AUTH_SOURCE)
+        self.assertIn("AUTH_KDF_ITERATIONS 4096U", AUTH_SOURCE)
+        self.assertIn("sha256_bytes", AUTH_SOURCE)
+        self.assertIn("auth_constant_time_equal", AUTH_SOURCE)
+        self.assertIn("gRngProtocolGuid", AUTH_SOURCE)
+        self.assertNotIn("plaintext", AUTH_SOURCE.lower())
+
+    def test_login_accounts_and_privileged_reauthentication_are_integrated(self) -> None:
+        entry = SOURCE.split("EFI_STATUS EFIAPI EfiMain", 1)[1]
+        dispatch = source_block("static void run_command(char *line)", "__attribute__((used))")
+        self.assertIn("auth_database_load();", entry)
+        self.assertIn("auth_login()", entry)
+        self.assertIn('streq(command, "logout")', dispatch)
+        self.assertIn("settings_accounts()", SOURCE)
+        for operation in ("auth_add_account", "auth_change_password", "auth_delete_account"):
+            self.assertIn(operation, ACCOUNT_SETTINGS_SOURCE)
+        self.assertIn('auth_authorize_admin("update installation")', UPDATE_SOURCE)
+        for action in ("partition add", "partition delete", "partition name", "repair", "reset"):
+            self.assertIn(f'auth_pre_os_authorize_admin("{action}")', SOURCE)
+        combined = SOURCE + UPDATE_SOURCE
+        for token in ("Type UNLOCK", "Type UPDATE", "Type RESET", "DELETE PARTITION", "Type REBOOT"):
+            self.assertNotIn(token, combined)
+        self.assertNotIn("gProtectionUnlocked", SOURCE + EDITOR_SOURCE)
+        self.assertIn("static int auth_read_username", AUTH_SOURCE)
+        self.assertIn("else overflow = 1", AUTH_SOURCE)
+        self.assertEqual(AUTH_SOURCE.count("auth_read_username(username)"), 3)
+
+    def test_account_management_is_in_settings_not_shell_commands(self) -> None:
+        dispatch = source_block("static void run_command(char *line)", "__attribute__((used))")
+        settings_ui = source_block("static void command_settings(void)", 'static int auth_session_is_admin(void);')
+        self.assertIn('streq(choice, "8")', settings_ui)
+        self.assertIn("if (!settings_accounts())", settings_ui)
+        self.assertIn("gScrollbackEnabled = previousScrollback", settings_ui)
+        account_branch = settings_ui.split('streq(choice, "8")', 1)[1].split("} else {", 1)[0]
+        self.assertIn("continue;", account_branch)
+        self.assertNotIn("settings_save_notice", account_branch)
+        for command in ("users", "useradd", "passwd", "userdel"):
+            self.assertNotRegex(dispatch, rf'(?:streq|starts_with)\(command, "{command}(?: |")')
+        for label in ("Change my password", "Add account", "Change another user's password", "Delete account", "Back to Settings"):
+            self.assertIn(label, ACCOUNT_SETTINGS_SOURCE)
+        self.assertIn("if (auth_session_is_admin())", ACCOUNT_SETTINGS_SOURCE)
+        self.assertIn("auth_read_username(username)", ACCOUNT_SETTINGS_SOURCE)
+        self.assertIn("gAuthDatabaseState != AUTH_DB_VALID", ACCOUNT_SETTINGS_SOURCE)
+        self.assertIn("Settings > User accounts", README)
 
     def test_nightly_pipeline_keeps_main_and_beta_channels_separate(self) -> None:
         self.assertIn("branches:\n      - nightly", NIGHTLY_WORKFLOW)

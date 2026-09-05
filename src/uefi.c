@@ -319,6 +319,9 @@ typedef struct {
 #define FS_PATH_BYTES 192
 #define SCROLLBACK_LINES 256
 #define SCROLLBACK_COLUMNS 160
+#define SCROLLBACK_DEFAULT 0U
+#define SCROLLBACK_ACCENT 1U
+#define SCROLLBACK_LITERAL 0x100U
 #define FS_ROOT        0
 #define FS_FILE        1
 #define FS_DIRECTORY   2
@@ -346,12 +349,16 @@ static UINT64 gGeneration;
 static UINT8 gStorageReady;
 static UINT8 gDedicatedStorage;
 static UINT8 gLegacySinglePartition;
-static UINT8 gProtectionUnlocked;
 static UINT8 gPersistenceFailure;
 static UINT8 gTransactionCorrupt;
+/* Firmware filesystem handles are stale after an in-session GPT mutation. */
+static UINT8 gPartitionRebootRequired;
 static UINTN gCwd;
 static UINTN gPreviousCwd;
 static char gScrollback[SCROLLBACK_LINES][SCROLLBACK_COLUMNS];
+/* Semantic colors follow the current Settings theme when history is repainted. */
+static UINT16 gScrollbackStyles[SCROLLBACK_LINES][SCROLLBACK_COLUMNS];
+static UINT8 gConsoleColorRole = SCROLLBACK_DEFAULT;
 static UINTN gScrollbackCount;
 static UINTN gScrollbackLength;
 static UINTN gScrollbackOffset;
@@ -449,6 +456,12 @@ static void memory_zero(void *destination, UINTN bytes) {
     while (bytes--) *out++ = 0;
 }
 
+/* Volatile stores keep credential erasure observable even under optimization. */
+static void secure_zero(void *destination, UINTN bytes) {
+    volatile UINT8 *out = (volatile UINT8 *)destination;
+    while (bytes--) *out++ = 0;
+}
+
 static void memory_copy(void *destination, const void *source, UINTN bytes) {
     UINT8 *out = (UINT8 *)destination;
     const UINT8 *in = (const UINT8 *)source;
@@ -504,6 +517,7 @@ static void console_write_raw(const char *text) {
 
 static void scrollback_reset(void) {
     memory_zero(gScrollback, sizeof(gScrollback));
+    memory_zero(gScrollbackStyles, sizeof(gScrollbackStyles));
     memory_zero(gScrollbackWrapped, sizeof(gScrollbackWrapped));
     gScrollbackCount = 1;
     gScrollbackLength = 0;
@@ -513,14 +527,18 @@ static void scrollback_reset(void) {
 static void scrollback_new_line(UINT8 wrapped) {
     UINTN index;
     if (gScrollbackCount < SCROLLBACK_LINES) {
+        memory_zero(gScrollback[gScrollbackCount], sizeof(gScrollback[gScrollbackCount]));
+        memory_zero(gScrollbackStyles[gScrollbackCount], sizeof(gScrollbackStyles[gScrollbackCount]));
         gScrollbackWrapped[gScrollbackCount] = wrapped;
         gScrollbackCount++;
     } else {
         for (index = 1; index < SCROLLBACK_LINES; index++) {
             memory_copy(gScrollback[index - 1], gScrollback[index], SCROLLBACK_COLUMNS);
+            memory_copy(gScrollbackStyles[index - 1], gScrollbackStyles[index], sizeof(gScrollbackStyles[index]));
             gScrollbackWrapped[index - 1] = gScrollbackWrapped[index];
         }
         memory_zero(gScrollback[SCROLLBACK_LINES - 1], SCROLLBACK_COLUMNS);
+        memory_zero(gScrollbackStyles[SCROLLBACK_LINES - 1], sizeof(gScrollbackStyles[0]));
         gScrollbackWrapped[SCROLLBACK_LINES - 1] = wrapped;
     }
     gScrollbackLength = 0;
@@ -538,6 +556,7 @@ static void scrollback_capture_char(char ch) {
     if (ch == '\b') {
         if (gScrollbackLength) {
             line[--gScrollbackLength] = 0;
+            gScrollbackStyles[gScrollbackCount - 1][gScrollbackLength] = SCROLLBACK_DEFAULT;
         } else if (gScrollbackCount > 1 && gScrollbackWrapped[gScrollbackCount - 1]) {
             UINTN length = 0;
             gScrollbackCount--;
@@ -552,6 +571,11 @@ static void scrollback_capture_char(char ch) {
         scrollback_new_line(1);
         line = gScrollback[gScrollbackCount - 1];
     }
+    UINTN expected = (UINTN)(gConsoleColorRole == SCROLLBACK_ACCENT ? gSettings.accentColor : gSettings.textColor) |
+        ((UINTN)gSettings.backgroundColor << 4);
+    UINTN attribute = gST->ConOut->Mode ? (UINTN)gST->ConOut->Mode->Attribute : expected;
+    gScrollbackStyles[gScrollbackCount - 1][gScrollbackLength] = attribute == expected ?
+        gConsoleColorRole : (UINT16)(SCROLLBACK_LITERAL | (attribute & 0x7fU));
     line[gScrollbackLength++] = ch;
     line[gScrollbackLength] = 0;
 }
@@ -565,16 +589,40 @@ static void scrollback_render(void) {
     UINTN end;
     UINTN start;
     UINTN index;
+    UINT8 savedRole = gConsoleColorRole;
+    UINTN savedAttribute;
     if (!gScrollbackEnabled || !gScrollbackCount) return;
+    savedAttribute = gST->ConOut->Mode ? (UINTN)gST->ConOut->Mode->Attribute :
+        ((UINTN)(savedRole == SCROLLBACK_ACCENT ? gSettings.accentColor : gSettings.textColor) |
+         ((UINTN)gSettings.backgroundColor << 4));
     if (gScrollbackOffset >= gScrollbackCount) gScrollbackOffset = gScrollbackCount - 1;
     end = gScrollbackCount - gScrollbackOffset;
     start = end > visible ? end - visible : 0;
+    settings_use_default_color();
     gST->ConOut->ClearScreen(gST->ConOut);
     for (index = start; index < end; index++) {
-        console_write_raw(gScrollback[index]);
-        if (index + 1 < end || gScrollbackOffset) console_write_raw("\n");
+        UINTN column = 0;
+        gST->ConOut->SetCursorPosition(gST->ConOut, 0, index - start);
+        while (column < SCROLLBACK_COLUMNS && gScrollback[index][column]) {
+            char run[SCROLLBACK_COLUMNS + 1];
+            UINTN length = 0;
+            UINT16 style = gScrollbackStyles[index][column];
+            if (style == SCROLLBACK_DEFAULT) settings_use_default_color();
+            else if (style == SCROLLBACK_ACCENT) settings_use_accent_color();
+            else gST->ConOut->SetAttribute(gST->ConOut, style & 0x7fU);
+            do { run[length++] = gScrollback[index][column++]; }
+            while (column < SCROLLBACK_COLUMNS && gScrollback[index][column] && gScrollbackStyles[index][column] == style);
+            run[length] = 0;
+            console_write_raw(run);
+        }
     }
-    if (gScrollbackOffset) console_write_raw("-- SCROLLBACK: Up/Down line, PageUp/PageDown page, End/Esc live --");
+    if (gScrollbackOffset) {
+        gST->ConOut->SetCursorPosition(gST->ConOut, 0, end - start);
+        settings_use_accent_color();
+        console_write_raw("-- SCROLLBACK: Up/Down line, PageUp/PageDown page, End/Esc live --");
+    }
+    gST->ConOut->SetAttribute(gST->ConOut, savedAttribute);
+    gConsoleColorRole = savedRole;
 }
 
 static void scrollback_move(int direction, UINTN lines) {
@@ -708,6 +756,8 @@ static char *next_argument(char *text, char **remainder) {
     }
     return start;
 }
+
+#include "sha256.inc"
 
 /* TINYFS*.BIN are legacy import sources only; direct FAT entries are authoritative. */
 static const CHAR16 gSlot0Path[] = {'\\','T','I','N','Y','F','S','0','.','B','I','N',0};
@@ -1186,6 +1236,9 @@ static int storage_delete_marker(const CHAR16 *path) {
 }
 
 static int storage_clear_os_missing(void) {
+#ifdef TINYGPT_NATIVE
+    if (!native_install_system()) return 0;
+#endif
     return storage_delete_marker(gOsMissingPath);
 }
 
@@ -1212,11 +1265,21 @@ static void wide_copy(CHAR16 *destination, const CHAR16 *source, UINTN capacity)
 static int wide_append_ascii(CHAR16 *path, const char *text, UINTN capacity) {
     UINTN used = 0;
     while (used < capacity && path[used]) used++;
+    if (used >= capacity) return 0;
     while (*text) {
         UINT8 ch = (UINT8)*text++;
         if (ch < 32U || ch > 126U || ch == '\\' || used + 1U >= capacity) return 0;
         path[used++] = (CHAR16)ch;
+        path[used] = 0;
     }
+    return 1;
+}
+
+static int wide_append_separator(CHAR16 *path, UINTN capacity) {
+    UINTN used = 0;
+    while (used < capacity && path[used]) used++;
+    if (used + 1U >= capacity) return 0;
+    path[used++] = '\\';
     path[used] = 0;
     return 1;
 }
@@ -1269,14 +1332,14 @@ static int storage_node_path(UINTN node, CHAR16 path[260]) {
     }
     if (node != FS_ROOT) return 0;
     while (depth) {
-        if (!wide_append_ascii(path, "\\", 260U) ||
+        if (!wide_append_separator(path, 260U) ||
             !wide_append_ascii(path, gNodes[stack[--depth]].name, 260U)) return 0;
     }
     return 1;
 }
 
 static int storage_child_path(UINTN parent, const char *name, CHAR16 path[260]) {
-    return storage_node_path(parent, path) && wide_append_ascii(path, "\\", 260U) &&
+    return storage_node_path(parent, path) && wide_append_separator(path, 260U) &&
         wide_append_ascii(path, name, 260U);
 }
 
@@ -1736,7 +1799,7 @@ static int storage_import_legacy(void) {
         CHAR16 path[260]; UINTN stack[FS_MAX_NODES], depth = 0, cursor = index;
         wide_copy(path, gDirectRootPath, 260U);
         while (cursor != FS_ROOT && depth < FS_MAX_NODES) { stack[depth++] = cursor; cursor = nodes[cursor].parent; }
-        while (depth) { if (!wide_append_ascii(path, "\\", 260U) || !wide_append_ascii(path, nodes[stack[--depth]].name, 260U)) goto failure; }
+        while (depth) { if (!wide_append_separator(path, 260U) || !wide_append_ascii(path, nodes[stack[--depth]].name, 260U)) goto failure; }
         if (nodes[index].type == FS_DIRECTORY) { if (!storage_create_directory(path)) goto failure; }
         else {
             int verified = 0;
@@ -1761,6 +1824,9 @@ failure:
 
 static int storage_os_missing(void) {
     if (!gStorageReady || storage_path_exists(gOsMissingPath)) return 1;
+#ifdef TINYGPT_NATIVE
+    if (!native_system_exists() && !storage_path_exists(gFactoryInstallPath)) return 1;
+#endif
     if (storage_retirement_valid() && !storage_marker_valid()) return 1;
     return !storage_marker_valid() && !storage_path_exists(gSlot0Path) &&
         !storage_path_exists(gSlot1Path) && !storage_path_exists(gFactoryInstallPath);
@@ -1832,11 +1898,6 @@ static int storage_install_empty(void) {
     if (!storage_create_directory(gDirectNamespacePath) || !storage_create_directory(gDirectRootPath) ||
         !storage_write_marker() || !storage_write_retirement_marker()) return 0;
     return storage_scan_direct();
-}
-
-static int storage_rollback(void) {
-    /* Whole-filesystem snapshot rollback was retired with direct FAT authority. */
-    return 0;
 }
 
 static UINT32 fs_node_checksum(const FS_NODE *node) {
@@ -1999,7 +2060,7 @@ static int fs_restore_system(void) {
     int editorApp = -1;
     int shellApp = -1;
     const char *editorAppInfo =
-        "name=TinyGPT Text Editor\nkind=native full-screen app\ncommand=textedit [PATH]\nfile_picker=interactive when PATH is omitted\nformat=ASCII text\ndisplay_wrap=soft at screen edge\nscroll=Up/Down arrow keys\nfile_limit=8191 bytes\nprotected_paths=require protect unlock";
+        "name=TinyGPT Text Editor\nkind=native full-screen app\ncommand=textedit [PATH]\nfile_picker=interactive when PATH is omitted\nformat=ASCII text\ndisplay_wrap=soft at screen edge\nscroll=Up/Down arrow keys\nfile_limit=8191 bytes\nprotected_paths=require Administrator role and password re-authentication";
     fs_ensure_dir(FS_ROOT, "tmp", 0);
     fs_ensure_dir(FS_ROOT, "lost+found", FS_PROTECTED);
     if (system >= 0) {
@@ -2028,7 +2089,7 @@ static int fs_restore_system(void) {
         fs_ensure_file((UINTN)boot, "boot-chain.info",
             "UEFI firmware -> BOOTAA64.EFI pre-OS environment -> verified TinyGPT shell", FS_PROTECTED);
         fs_ensure_file((UINTN)boot, "pre-os.info",
-            "name=TinyGPT Pre-OS Environment\nphase=before operating system\nboot hotkey=R\nmenu hotkey=Enter\npartition 1=protected recovery\ntargeted maintenance=yes\npartition creation=yes\nmissing OS=open automatically\nintegrity errors=open automatically\nscrollback=256 lines", FS_PROTECTED);
+            "name=TinyGPT Pre-OS Environment\nphase=before operating system\nboot hotkey=R\nmenu hotkey=Enter\npartition 1=protected recovery\ntargeted maintenance=yes\npartition creation=yes\npartition deletion=metadata only, reboot required\nmissing OS=open automatically\nintegrity errors=open automatically\nscrollback=256 lines", FS_PROTECTED);
     }
     if (kernel >= 0) {
         fs_ensure_file((UINTN)kernel, "kernel.info",
@@ -2042,7 +2103,7 @@ static int fs_restore_system(void) {
         fs_ensure_file((UINTN)firmware, "uefi.info",
             "critical=yes\ninterface=UEFI ARM64\nloader=BOOTAA64.EFI\nwatchdog=disabled while OS runs", FS_PROTECTED);
         fs_ensure_file((UINTN)firmware, "protocols.info",
-            "SimpleTextInput\nSimpleTextOutput\nSimpleFileSystem\nBlockIO\nLoadedImage\nGraphicsOutput\nHttpServiceBinding (optional)\nHttp/TLS (optional)\nRuntimeServices", FS_PROTECTED);
+            "SimpleTextInput\nSimpleTextOutput\nSimpleFileSystem\nBlockIO\nLoadedImage\nGraphicsOutput\nRNG (optional; salt generation)\nHttpServiceBinding (optional)\nHttp/TLS (optional)\nRuntimeServices", FS_PROTECTED);
     }
     if (config >= 0) {
         fs_ensure_file((UINTN)config, "boot.cfg",
@@ -2050,7 +2111,7 @@ static int fs_restore_system(void) {
         fs_ensure_file((UINTN)config, "shell.cfg",
             "home=/home\napps=/apps\ntemporary=/tmp\nprompt=tinygpt\nsettings=/home/.tinygptrc\nnavigation=cd", FS_PROTECTED);
         fs_ensure_file((UINTN)config, "protection.cfg",
-            "protected=/system,/apps,/lost+found\ndefault=locked\nunlock=protect unlock\nscope=current-boot", FS_PROTECTED);
+            "protected=/system,/apps,/lost+found\naccess=Administrator\nreauthentication=required for each privileged write", FS_PROTECTED);
     }
     if (drivers >= 0) {
         fs_ensure_file((UINTN)drivers, "graphics.info", "UEFI Graphics Output Protocol\nconsumer=Freedoom\nmode=firmware-native", FS_PROTECTED);
@@ -2070,13 +2131,15 @@ static int fs_restore_system(void) {
         }
         fs_ensure_file((UINTN)runtime, "filesystem.info", "authority=individual FAT entries\nnamespace=TINYGPTFS/ROOT\nchecksums=scan-time FNV-1a\nmetadata_cache=96\nfile_limit=8191", FS_PROTECTED);
         fs_ensure_file((UINTN)runtime, "mounts.info", "/            direct FAT read-write\n/system      protected\n/apps        protected\nexternal FAT platform data is hidden", FS_PROTECTED);
-        fs_ensure_file((UINTN)runtime, "transactions.info", "writes=journal-first temporary replacement\nmarker=TINYGPTFS/FORMAT.DAT\njournals=TINYGPTFS/TXN.CMT,TINYGPTFS/TXN.BAK\nlegacy retirement=TINYFS.RET\nwhole-filesystem rollback=retired", FS_PROTECTED);
+        fs_ensure_file((UINTN)runtime, "transactions.info", "writes=journal-first temporary replacement\nmarker=TINYGPTFS/FORMAT.DAT\njournals=TINYGPTFS/TXN.CMT,TINYGPTFS/TXN.BAK\nlegacy retirement=TINYFS.RET", FS_PROTECTED);
     }
     if (security >= 0) {
         fs_ensure_file((UINTN)security, "integrity.policy",
             "file bytes are read and hashed during scan\nhashes are observational, not persisted trust anchors\nupdates require HTTPS, SHA-256, and ARM64 PE validation\nverify structure and required files at boot\nincomplete file transactions recover at boot", FS_PROTECTED);
         fs_ensure_file((UINTN)security, "protected.paths",
-            "/system\n/apps\n/lost+found\nUnlock requires exact UNLOCK confirmation and expires at reboot.", FS_PROTECTED);
+            "/system\n/apps\n/lost+found\nAdministrator role and password re-authentication are required for writes.", FS_PROTECTED);
+        fs_ensure_file((UINTN)security, "authentication.policy",
+            "database=TINYRECOV:/TINYAUTH0.DAT,TINYAUTH1.DAT\nscope=global across system partitions\npasswords=salted iterated SHA-256\nroles=Standard,Administrator\nlogin=every normal boot\nprivileged writes=Administrator password re-authentication\ncorruption=fail closed", FS_PROTECTED);
     }
     if (apps >= 0) {
         int previousEditor = fs_find_child((UINTN)apps, "editor");
@@ -2543,11 +2606,13 @@ static UINTN settings_text_attribute(UINT8 foreground, UINT8 background) {
 }
 
 static void settings_use_default_color(void) {
+    gConsoleColorRole = SCROLLBACK_DEFAULT;
     gST->ConOut->SetAttribute(
         gST->ConOut, settings_text_attribute(gSettings.textColor, gSettings.backgroundColor));
 }
 
 static void settings_use_accent_color(void) {
+    gConsoleColorRole = SCROLLBACK_ACCENT;
     gST->ConOut->SetAttribute(
         gST->ConOut, settings_text_attribute(gSettings.accentColor, gSettings.backgroundColor));
 }
@@ -2662,7 +2727,8 @@ static void settings_show(const char *notice) {
     print("  4  Show path in prompt: "); settings_print_toggle(gSettings.showPromptPath); print("\n");
     print("  5  Startup directory  : "); print(gSettings.startupHome ? "/home" : "/"); print("\n");
     print("  6  Scrollback         : "); settings_print_toggle(gSettings.scrollback); print("\n");
-    print("  7  Restore defaults\n");
+    print("  7  Restore appearance and shell defaults\n");
+    print("  8  User accounts\n");
     print("  0  Return to shell\n");
     if (notice && *notice) {
         settings_use_accent_color();
@@ -2749,6 +2815,8 @@ static const char *settings_save_notice(void) {
            "Applied for this boot; automatic save failed.";
 }
 
+static int settings_accounts(void);
+
 static void command_settings(void) {
     char choice[32];
     const char *notice = (const char *)0;
@@ -2783,8 +2851,16 @@ static void command_settings(void) {
         } else if (streq(choice, "7")) {
             settings_defaults();
             changed = 1;
+        } else if (streq(choice, "8")) {
+            if (!settings_accounts()) {
+                gScrollbackEnabled = previousScrollback;
+                settings_apply_runtime();
+                return;
+            }
+            notice = (const char *)0;
+            continue;
         } else {
-            notice = "Unknown selection; choose 0 through 7.";
+            notice = "Unknown selection; choose 0 through 8.";
             continue;
         }
         if (changed > 0) {
@@ -2797,30 +2873,15 @@ static void command_settings(void) {
     }
 }
 
-#include "editor.inc"
+static int auth_session_is_admin(void);
+static int auth_authorize_admin(const char *action);
 
-static void command_protect(const char *command) {
-    if (streq(command, "protect") || streq(command, "protect status")) {
-        print(gProtectionUnlocked ? "protected nodes are UNLOCKED until reboot\n" :
-              "protected nodes are locked\n");
-    } else if (streq(command, "protect unlock")) {
-        char answer[16];
-        print("Type UNLOCK to allow protected-node changes this boot: ");
-        read_line(answer, sizeof(answer));
-        if (streq(answer, "UNLOCK")) {
-            gProtectionUnlocked = 1;
-            print("protection unlocked; run 'protect lock' when finished\n");
-        } else print("unlock cancelled\n");
-    } else if (streq(command, "protect lock")) {
-        gProtectionUnlocked = 0;
-        print("protected nodes locked\n");
-    } else {
-        print("protect: use status, unlock, or lock\n");
-    }
-}
+#include "editor.inc"
 
 #include "partition.inc"
 #include "update.inc"
+#include "auth.inc"
+#include "account_settings.inc"
 #include "doom_port.inc"
 
 static void boot_stage(UINTN step, const char *label, int okay) {
@@ -2844,7 +2905,24 @@ static int pre_os_parse_partition(const char *text, UINTN *partitionOut) {
     return 1;
 }
 
+static int pre_os_parse_partition_token(char *text, UINTN *partitionOut) {
+    char *end = text;
+    while (*end >= '0' && *end <= '9') end++;
+    if (end == text) return 0;
+    if (*end) {
+        char *trailing = end;
+        while (*trailing == ' ') trailing++;
+        if (*trailing) return 0;
+        *end = 0;
+    }
+    return pre_os_parse_partition(text, partitionOut);
+}
+
 static int pre_os_mount_target(UINTN partition, int verbose) {
+    if (gPartitionRebootRequired) {
+        if (verbose) print("target: reboot required after the GPT change; firmware handles are stale\n");
+        return 0;
+    }
     if (partition == 1U) {
         if (verbose) print("target: partition 1 is protected recovery storage\n");
         return 0;
@@ -2876,6 +2954,10 @@ static int pre_os_bootable(UINTN partition, int verbose) {
 static int pre_os_repair(UINTN partition) {
     int mounted;
     int legacyFiles;
+    if (gPartitionRebootRequired) {
+        print("repair: reboot required after the GPT change; firmware handles are stale\n");
+        return 0;
+    }
     if (partition == 1U) {
         print("repair: partition 1 is protected recovery storage\n");
         return 0;
@@ -2982,12 +3064,15 @@ static UINTN pre_os_boot_menu(void) {
             return (UINTN)(key.UnicodeChar - '0');
         } else if (key.UnicodeChar == 'r' || key.UnicodeChar == 'R') return 1U;
         else if (key.UnicodeChar == '\r' || key.UnicodeChar == '\n') return selected;
-        else if (key.UnicodeChar == 's' || key.UnicodeChar == 'S')
-            pre_os_draw_boot_menu(
-                selected,
-                boot_order_save(selected) ? "Default boot partition saved." :
-                                               "Could not save the default boot partition."
-            );
+        else if (key.UnicodeChar == 's' || key.UnicodeChar == 'S') {
+            if (auth_pre_os_authorize_admin("changing boot order"))
+                pre_os_draw_boot_menu(
+                    selected,
+                    boot_order_save(selected) ? "Default boot partition saved." :
+                                                   "Could not save the default boot partition."
+                );
+            else pre_os_draw_boot_menu(selected, "Boot order was not changed.");
+        }
     }
 }
 
@@ -2999,13 +3084,13 @@ static UINTN pre_os_boot_prompt(void) {
     if (!pre_os_partition_registered(selected)) selected = 1U;
     print("\n  Default partition "); print_u64(selected); print(": ");
     print(gPartitionNames[selected - 1U]); print("\n");
-    print("  Press Enter to interrupt boot and open the partition menu, or R for recovery.\n");
+    print("  Press Enter for the partition menu, or Esc / R for firmware recovery.\n");
     while (timer_count() < deadline) {
         if (!poll_input_key(&key)) {
             __asm__ volatile("yield");
             continue;
         }
-        if (key.UnicodeChar == 'r' || key.UnicodeChar == 'R') return 1U;
+        if (key.ScanCode == 23 || key.UnicodeChar == 'r' || key.UnicodeChar == 'R') return 1U;
         if (key.UnicodeChar == '\r' || key.UnicodeChar == '\n') return pre_os_boot_menu();
     }
     return selected;
@@ -3030,7 +3115,11 @@ static int boot_screen(EFI_HANDLE imageHandle) {
     );
     gST->ConOut->SetAttribute(gST->ConOut, 0x07);
     print("  TinyGPT " TINYGPT_DISPLAY_VERSION " firmware startup\n\n");
+#ifdef TINYGPT_NATIVE
+    boot_stage(1, "TinyGPT BIOS and ARM64 timer (no EDK II)", 1);
+#else
     boot_stage(1, "ARM64 UEFI firmware and timer", 1);
+#endif
     gStorageReady = (UINT8)storage_init(imageHandle);
     boot_stage(2, "TinyGPT boot volume", gStorageReady);
     if (gStorageReady) targetPartition = pre_os_boot_prompt();
@@ -3050,11 +3139,7 @@ static int boot_screen(EFI_HANDLE imageHandle) {
                 }
                 if (mounted) storage_delete_marker(gFactoryInstallPath);
             } else if (!mounted && !legacyFiles) osMissing = 1;
-            if (mounted && !storage_transaction_pending()) {
-                gPersistenceFailure = 0;
-                (void)fs_restore_system();
-                if (gPersistenceFailure) mounted = 0;
-            }
+            /* Mount and inspect only: deleted system files require explicit repair. */
         }
     }
     boot_stage(3, "authoritative direct FAT filesystem", mounted);
@@ -3079,21 +3164,21 @@ static void pre_os_help(void) {
         "Pre-OS commands:\n"
         "  help             show every pre-OS command\n"
         "  partitions       list every registered GPT partition\n"
-        "  partition add MIB NAME  create and name a FAT partition\n"
-        "  partition name N NAME  rename a non-protected partition\n"
+        "  partition add MIB NAME  create a FAT partition (Administrator)\n"
+        "  partition delete N   remove managed metadata (Administrator)\n"
+        "  partition name N NAME  rename a partition (Administrator)\n"
         "  use N            select a partition for file navigation\n"
         "  order            show the default boot partition\n"
         "  order N          set a numbered partition as the default\n"
         "  scan N           verify direct FAT entries and transaction state\n"
-        "  repair N         repair or install TinyGPT on a partition\n"
-        "  rollback N       report legacy rollback availability\n"
+        "  repair N         repair or install TinyGPT (Administrator)\n"
         "  pwd              print the current directory\n"
         "  ls [PATH]        list a directory or file\n"
         "  cd [PATH|-]      change directory; no path opens /home\n"
         "  cat PATH         print a file\n"
         "  stat PATH        show file or directory metadata\n"
         "  tree [PATH]      show a directory tree\n"
-        "  reset N          erase and reinstall a target partition\n"
+        "  reset N          erase and reinstall (Administrator)\n"
         "  scroll           show scrollback status and keyboard controls\n"
         "  scroll clear     erase retained scrollback\n"
         "  boot [N]         verify and start the selected partition\n"
@@ -3133,14 +3218,52 @@ static void pre_os_environment(void) {
             while (*separator && *separator != ' ') separator++;
             if (*separator) *separator++ = 0;
             separator = skip_spaces(separator);
-            if (!settings_parse_uint8(arguments, &mebibytes) || !*separator ||
-                !partition_add(mebibytes, separator, &created)) {
+            if (!settings_parse_uint8(arguments, &mebibytes) || !*separator) {
+                print("partition add: use partition add MIB NAME\n");
+            } else if (!auth_pre_os_authorize_admin("partition add")) {
+                print("partition add: authorization required\n");
+            } else if (!partition_add(mebibytes, separator, &created)) {
                 print("partition add: "); print(partition_error_text()); print("\n");
             } else {
                 print("Created partition "); print_u64(created); print(" named ");
                 print(gPartitionNames[created - 1U]);
                 print(". Reboot once; TinyGPT will initialize it automatically.\n");
             }
+        } else if (starts_with(line, "partition delete ")) {
+            char *argument = skip_spaces(line + 17);
+            UINTN partition;
+            UINT64 start;
+            UINT64 end;
+            int result;
+            if (!pre_os_parse_partition_token(argument, &partition)) {
+                print("partition delete: use partition delete N (2-16)\n");
+            } else if (!partition_delete_validate(partition, &start, &end)) {
+                print("partition delete: "); print(partition_error_text()); print("\n");
+            } else {
+                print("Partition "); print_u64(partition); print(" ");
+                print(gPartitionNames[partition - 1U]);
+                print(": LBA "); print_u64(start); print("-"); print_u64(end);
+                print(" ("); print_u64((end - start + 1U) / 2048U); print(" MiB).\n");
+                print("This removes its GPT entry; data will not be securely erased.\n");
+                if (!auth_pre_os_authorize_admin("partition delete")) {
+                    print("partition delete: authorization required\n");
+                } else {
+                    result = partition_delete(partition);
+                    if (!result) {
+                        print("partition delete: "); print(partition_error_text()); print("\n");
+                    } else if (result == 2) {
+                        print("Partition metadata was deleted, but registry cleanup failed. ");
+                        print("Contents were not overwritten; this is not secure erasure. ");
+                        print("Do not reuse this slot; reboot into recovery.\n");
+                    } else {
+                        print("Partition metadata deleted and its extent is now free. ");
+                        print("Contents were not overwritten; this is not secure erasure. ");
+                        print("Reboot required before further partition changes, selection, or boot.\n");
+                    }
+                }
+            }
+        } else if (streq(line, "partition delete")) {
+            print("partition delete: use partition delete N (2-16)\n");
         } else if (starts_with(line, "partition name ")) {
             char *arguments = skip_spaces(line + 15);
             char *separator = arguments;
@@ -3148,10 +3271,14 @@ static void pre_os_environment(void) {
             while (*separator && *separator != ' ') separator++;
             if (*separator) *separator++ = 0;
             separator = skip_spaces(separator);
-            if (!pre_os_parse_partition(arguments, &partition) || !*separator) {
+            if (gPartitionRebootRequired) {
+                print("partition name: reboot required before further partition changes\n");
+            } else if (!pre_os_parse_partition(arguments, &partition) || !*separator) {
                 print("partition name: use partition name N NAME\n");
             } else if (partition == 1U) {
                 print("partition name: partition 1 is protected recovery storage\n");
+            } else if (!auth_pre_os_authorize_admin("partition name")) {
+                print("partition name: authorization required\n");
             } else if (!partition_rename(partition, separator)) {
                 print("partition name: target must exist and NAME must be unique (1-11 letters, digits, _ or -)\n");
             } else {
@@ -3172,9 +3299,13 @@ static void pre_os_environment(void) {
             print("\n");
         } else if (starts_with(line, "order ")) {
             UINTN partition;
-            if (!pre_os_parse_partition(skip_spaces(line + 6), &partition) ||
+            if (gPartitionRebootRequired)
+                print("order: reboot required after the GPT change; firmware handles are stale\n");
+            else if (!pre_os_parse_partition(skip_spaces(line + 6), &partition) ||
                 !pre_os_partition_registered(partition))
                 print("order: provide a registered partition number\n");
+            else if (!auth_pre_os_authorize_admin("changing boot order"))
+                print("order: authorization required\n");
             else print(boot_order_save(partition) ? "Default boot partition saved.\n" :
                   "Could not save the default boot partition.\n");
         } else if (starts_with(line, "scan ")) {
@@ -3191,19 +3322,16 @@ static void pre_os_environment(void) {
             UINTN partition;
             if (!pre_os_parse_partition(skip_spaces(line + 7), &partition))
                 print("repair: provide a non-protected partition number\n");
-            else pre_os_repair(partition);
+            else if (auth_pre_os_authorize_admin("repair")) pre_os_repair(partition);
         } else if (streq(line, "repair")) {
             print("repair: provide a non-protected partition number\n");
-        } else if (starts_with(line, "rollback ")) {
-            UINTN partition;
-            if (!pre_os_parse_partition(skip_spaces(line + 9), &partition))
-                print("rollback: provide a non-protected partition number\n");
-            else if (pre_os_mount_target(partition, 1)) {
-                if (!storage_rollback())
-                    print("rollback: unavailable; whole-filesystem snapshots were retired by direct FAT storage\n");
-            }
-        } else if (streq(line, "rollback")) {
-            print("rollback: provide a non-protected partition number\n");
+        } else if (!gVolumeRoot &&
+            (streq(line, "pwd") || streq(line, "ls") || starts_with(line, "ls ") ||
+             streq(line, "cd") || starts_with(line, "cd ") || starts_with(line, "cat ") ||
+             starts_with(line, "stat ") || streq(line, "tree") || starts_with(line, "tree ") ||
+             streq(line, "reset") || starts_with(line, "reset ") ||
+             streq(line, "boot") || starts_with(line, "boot "))) {
+            print("target unavailable after partition deletion; reboot required for fresh firmware handles\n");
         } else if (streq(line, "pwd")) {
             char path[FS_PATH_BYTES];
             fs_path(gCwd, path, sizeof(path));
@@ -3246,32 +3374,28 @@ static void pre_os_environment(void) {
             else fs_tree((UINTN)node);
         } else if (starts_with(line, "reset ")) {
             UINTN partition;
-            char answer[24];
-            if (!pre_os_parse_partition(skip_spaces(line + 6), &partition) || partition == 1U)
+            if (gPartitionRebootRequired)
+                print("reset: reboot required after the GPT change; firmware handles are stale\n");
+            else if (!pre_os_parse_partition(skip_spaces(line + 6), &partition) || partition == 1U)
                 print("reset: provide a non-protected partition number\n");
             else if (!storage_activate_partition(partition))
                 print("reset: target partition is unavailable\n");
-            else {
-                print("Type RESET "); print_u64(partition); print(" to erase that partition's user files: ");
-                read_line(answer, sizeof(answer));
-                if (starts_with(answer, "RESET ")) {
-                    UINTN confirmed;
-                    if (pre_os_parse_partition(skip_spaces(answer + 6), &confirmed) && confirmed == partition) {
-                        UINTN removed = 0, failures = 0;
-                        EFI_FILE_PROTOCOL *direct = (EFI_FILE_PROTOCOL *)0;
-                        if (storage_open_for_delete(gVolumeRoot, (CHAR16 *)gDirectNamespacePath, &direct) == EFI_SUCCESS && direct) {
-                            storage_wipe_directory(direct, 99U, &removed, &failures);
-                            if (direct->Delete(direct) != EFI_SUCCESS) failures++;
-                        }
-                        gGeneration = 0;
-                        if (!failures && storage_install_empty()) {
-                            fs_format();
-                            if (fs_scan_integrity(0) == 0 && storage_clear_os_missing())
-                                print("Direct FAT reset complete; target partition is bootable\n");
-                            else print("reset failed: defaults could not be verified\n");
-                        } else print("reset failed: target namespace could not be replaced\n");
-                    } else print("reset cancelled\n");
-                } else print("reset cancelled\n");
+            else if (!auth_pre_os_authorize_admin("reset")) {
+                print("reset: authorization required\n");
+            } else {
+                UINTN removed = 0, failures = 0;
+                EFI_FILE_PROTOCOL *direct = (EFI_FILE_PROTOCOL *)0;
+                if (storage_open_for_delete(gVolumeRoot, (CHAR16 *)gDirectNamespacePath, &direct) == EFI_SUCCESS && direct) {
+                    storage_wipe_directory(direct, 99U, &removed, &failures);
+                    if (direct->Delete(direct) != EFI_SUCCESS) failures++;
+                }
+                gGeneration = 0;
+                if (!failures && storage_install_empty()) {
+                    fs_format();
+                    if (fs_scan_integrity(0) == 0 && storage_clear_os_missing())
+                        print("Direct FAT reset complete; target partition is bootable\n");
+                    else print("reset failed: defaults could not be verified\n");
+                } else print("reset failed: target namespace could not be replaced\n");
             }
         } else if (streq(line, "reset")) {
             print("reset: provide a non-protected partition number\n");
@@ -3334,7 +3458,9 @@ static void command_help(void) {
         "  textedit [PATH]      text editor; omit PATH for the interactive file picker\n"
         "  doom                 launch Freedoom; Q or F12 returns to the shell\n"
         "  settings             open the full-screen persistent settings UI\n"
-        "  protect [status|unlock|lock] manage protected-node writes\n"
+        "  Account management: Settings > User accounts.\n"
+        "  logout               return to login\n"
+        "  Protected writes require Administrator password re-authentication.\n"
         "  update [check] [main|nightly]\n"
         "                       select and check/install an update channel\n"
         "  reboot               restart TinyGPT (writes already persist)\n"
@@ -3353,8 +3479,11 @@ static void command_info(void) {
     print(gStorageReady ? "persistent TINYGPTFS/ROOT namespace\n" : "unavailable\n");
     print("Format gen.  : ");
     print_u64(gGeneration);
-    print("\nProtection   : ");
-    print(gProtectionUnlocked ? "UNLOCKED until reboot" : "locked");
+    print("\nAccount      : ");
+    if (gCurrentAccount >= 0) print(gAuthDatabase.accounts[gCurrentAccount].username);
+    else print("none");
+    print("\nRole/access  : ");
+    print(auth_session_is_admin() ? "Administrator / root" : "Standard / ordinary files");
     print("\nCurrent EL   : EL");
     print_u64(current_el());
     print("\nTimer Hz     : ");
@@ -3367,7 +3496,16 @@ static void command_info(void) {
 
 static void run_command(char *line) {
     char *command = skip_spaces(line);
-    if (!*command) return;
+    if (!*command || gCurrentAccount < 0) return;
+    if (streq(command, "logout")) {
+        gCurrentAccount = -1;
+        gCwd = FS_ROOT;
+        gPreviousCwd = FS_ROOT;
+        scrollback_reset();
+        gST->ConOut->ClearScreen(gST->ConOut);
+        print("Logged out.\n");
+        return;
+    }
     /* The cache is disposable: refresh before path/protection decisions. */
     if (!fs_refresh_cache()) {
         print("filesystem: FAT metadata refresh failed; command aborted\n");
@@ -3430,6 +3568,7 @@ static void run_command(char *line) {
         char *data;
         char *path = next_argument(command + (append ? 7 : 6), &data);
         int node = path ? fs_resolve(path) : -1;
+        int authorized = 0;
         if (!path) print("write: expected PATH [TEXT]\n");
         else {
             if (node < 0) {
@@ -3439,15 +3578,15 @@ static void run_command(char *line) {
                     print("write: invalid path\n");
                     return;
                 }
-                if (fs_is_protected(parent) && !gProtectionUnlocked) {
-                    print("write: protected system path (use 'protect unlock')\n");
-                    return;
+                if (fs_is_protected(parent)) {
+                    if (!auth_authorize_admin("protected write")) return;
+                    authorized = 1;
                 }
                 node = fs_alloc(FS_FILE, parent, name, 0);
             }
             if (node < 0) print("write: filesystem full or path exists\n");
             else if (gNodes[node].type != FS_FILE) print("write: path is a directory\n");
-            else if (fs_is_protected((UINTN)node) && !gProtectionUnlocked) print("write: protected system file (use 'protect unlock')\n");
+            else if (!authorized && fs_is_protected((UINTN)node) && !auth_authorize_admin("protected write")) print("write: protected system file (administrator required)\n");
             else {
                 int saved;
                 if (append) {
@@ -3476,7 +3615,7 @@ static void run_command(char *line) {
         int existing = fs_resolve(path);
         if (existing >= 0) print(gNodes[existing].type != FS_DIRECTORY ? "mkdir: file exists\n" : "already exists\n");
         else if (!fs_resolve_parent(path, &parent, name)) print("mkdir: invalid path\n");
-        else if (fs_is_protected(parent) && !gProtectionUnlocked) print("mkdir: protected system path (use 'protect unlock')\n");
+        else if (fs_is_protected(parent) && !auth_authorize_admin("protected write")) print("mkdir: protected system path (administrator required)\n");
         else if (fs_alloc(FS_DIRECTORY, parent, name, 0) < 0) print("mkdir: filesystem full\n");
         else fs_commit();
     } else if (starts_with(command, "rm ") || starts_with(command, "rmdir ")) {
@@ -3486,8 +3625,8 @@ static void run_command(char *line) {
         int rootRequest = recursive && streq(path, "/");
         int node = rootRequest ? (int)FS_ROOT : (*path ? fs_resolve(path) : -1);
         if (node < 0) print("remove: path not found\n");
-        else if (rootRequest && !gProtectionUnlocked) {
-            print("rm -rf /: protected system is locked (use 'protect unlock')\n");
+        else if (rootRequest && !auth_authorize_admin("rm -rf /")) {
+            print("rm -rf /: administrator authorization required\n");
         } else if (rootRequest) {
             UINTN removed = 0;
             UINTN failures = 0;
@@ -3523,7 +3662,7 @@ static void run_command(char *line) {
             volume->Close(volume);
             print("TinyGPT direct files, updater backups, and Freedoom data are gone.\n");
         } else if ((UINTN)node == FS_ROOT) print("remove: only exact rm -rf / can erase root\n");
-        else if (fs_is_protected((UINTN)node) && !gProtectionUnlocked) print("remove: protected system node (use 'protect unlock')\n");
+        else if (fs_is_protected((UINTN)node) && !auth_authorize_admin("protected write")) print("remove: protected system node (administrator required)\n");
         else if (!recursive && directory && gNodes[node].type != FS_DIRECTORY) print("rmdir: not a directory\n");
         else if (!directory && gNodes[node].type != FS_FILE) print("rm: use rmdir or rm -rf for directories\n");
         else if (!recursive && gNodes[node].type == FS_DIRECTORY && fs_has_children((UINTN)node)) print("rmdir: directory not empty\n");
@@ -3551,8 +3690,8 @@ static void run_command(char *line) {
                 print("cp: invalid destination\n");
                 return;
             }
-            if (fs_is_protected(parent) && !gProtectionUnlocked) {
-                print("cp: protected destination (use 'protect unlock')\n");
+            if (fs_is_protected(parent) && !auth_authorize_admin("protected write")) {
+                print("cp: protected destination (administrator required)\n");
                 return;
             }
             if (!storage_read_node((UINTN)sourceNode, gFileBuffer, sizeof(gFileBuffer), &sourceBytes)) {
@@ -3572,7 +3711,7 @@ static void run_command(char *line) {
         char name[FS_NAME_BYTES];
         int destinationNode = *destination ? fs_resolve(destination) : -1;
         if (sourceNode <= 0) print("mv: source not found or root\n");
-        else if (fs_is_protected((UINTN)sourceNode) && !gProtectionUnlocked) print("mv: protected system node (use 'protect unlock')\n");
+        else if (fs_is_protected((UINTN)sourceNode) && !auth_authorize_admin("protected move")) print("mv: protected system node (administrator required)\n");
         else {
             if (destinationNode >= 0 && gNodes[destinationNode].type == FS_DIRECTORY) {
                 parent = (UINTN)destinationNode;
@@ -3581,7 +3720,7 @@ static void run_command(char *line) {
                 print("mv: invalid destination\n");
                 return;
             }
-            if (fs_is_protected(parent) && !gProtectionUnlocked) print("mv: protected destination (use 'protect unlock')\n");
+            if (fs_is_protected(parent) && !auth_authorize_admin("protected write")) print("mv: protected destination (administrator required)\n");
             else if (fs_find_child(parent, name) >= 0) print("mv: destination already exists\n");
             else if (gNodes[sourceNode].type == FS_DIRECTORY && fs_is_ancestor((UINTN)sourceNode, parent)) print("mv: cannot move a directory inside itself\n");
             else {
@@ -3628,17 +3767,19 @@ static void run_command(char *line) {
         settings_use_default_color();
     } else if (streq(command, "settings")) {
         command_settings();
-    } else if (streq(command, "protect") || starts_with(command, "protect ")) {
-        command_protect(command);
     } else if (streq(command, "update") || streq(command, "update main") ||
                streq(command, "update nightly") || streq(command, "update check") ||
                streq(command, "update check main") || streq(command, "update check nightly")) {
+#ifdef TINYGPT_NATIVE
+        print("Native updates require a host-built TinyGPT system/firmware image; EFI updates are not compatible.\n");
+#else
         int checkOnly = streq(command, "update check") ||
                         streq(command, "update check main") ||
                         streq(command, "update check nightly");
         int nightly = streq(command, "update nightly") ||
                       streq(command, "update check nightly");
         command_update(checkOnly, nightly);
+#endif
     } else if (streq(command, "reboot")) {
         gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, (void *)0);
         for (;;) __asm__ volatile("wfe");
@@ -3663,7 +3804,6 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     gTimerHz = timer_frequency();
     gStartTicks = timer_count();
     gGeneration = 0;
-    gProtectionUnlocked = 0;
     gPersistenceFailure = 0;
     gTransactionCorrupt = 0;
     gScrollbackEnabled = 0;
@@ -3671,8 +3811,19 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     gDoomStarted = 0;
     gCwd = FS_ROOT;
     gPreviousCwd = FS_ROOT;
+#if defined(TINYGPT_NATIVE) && !defined(TINYGPT_FIRMWARE)
+    gStorageReady = (UINT8)storage_init(image);
+    preOsRequested = !gStorageReady || !pre_os_bootable(native_selected_partition(), 1);
+    if (preOsRequested) {
+        print("Native system mount failed; rebooting to firmware recovery.\n");
+        gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, (void *)0);
+        for (;;) __asm__ volatile("wfe");
+    }
+#else
     preOsRequested = boot_screen(image);
     if (preOsRequested) pre_os_environment();
+#endif
+    auth_database_load();
     settings_load();
     startupNode = fs_resolve(gSettings.startupHome ? "/home" : "/");
     if (startupNode >= 0 && gNodes[startupNode].type == FS_DIRECTORY) {
@@ -3686,8 +3837,11 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *systemTable) {
     print("TinyGPT " TINYGPT_DISPLAY_VERSION);
     settings_use_default_color();
     print(" - ARM64 shell + direct FAT filesystem\n");
-    print("Pre-OS recovery: press R during firmware startup.\n\n");
+    print("Pre-OS recovery: press Esc or R during firmware startup.\n\n");
     for (;;) {
+        while (gCurrentAccount < 0) {
+            if (!auth_login()) delay_ms(500);
+        }
         fs_path(gCwd, path, sizeof(path));
         settings_use_accent_color();
         print("tinygpt");

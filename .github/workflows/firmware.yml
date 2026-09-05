@@ -1,4 +1,4 @@
-name: Build optional UEFI firmware
+name: Build firmware
 
 on:
   workflow_dispatch:
@@ -8,6 +8,10 @@ on:
       - "firmware/**"
       - "tools/build_uefi_firmware.sh"
       - "tools/make_uefi_ca_bundle.py"
+      - "tools/build_bios.sh"
+      - "tools/make_bios_rom.py"
+      - "tools/test_bios.py"
+      - "tests/*bios*"
 
 permissions:
   contents: read
@@ -17,6 +21,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-bios:
+    name: Standalone TinyGPT BIOS (no EDK II)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install standalone build and emulator tools
+        run: |
+          python3 -m pip install ziglang==0.14.1
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends qemu-system-arm
+      - name: Native parser tests
+        run: python3 -m unittest discover -s tests -p 'test_bios_native.py' -v
+      - name: Boot without EDK II or an OS disk
+        run: make bios-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TinyGPT-BIOS-experimental
+          path: |
+            build/bios/TinyGPT-BIOS.bin
+            build/bios/TinyGPT-BIOS.elf
+          if-no-files-found: error
+          retention-days: 7
+
   firmware:
     name: EDK2 HTTP/TLS firmware
     runs-on: ubuntu-latest

@@ -4,14 +4,37 @@ Notable changes to TinyGPT are documented here. This project follows [Keep a Cha
 
 ## [Unreleased]
 
+### Added
+
+- Add a full native BIOS/system target (`make native`): independently resident recovery, a disk-loaded TinyGPT ELF OS, writable FAT16/FAT32, graphical/serial consoles, and VirtIO-MMIO keyboard/block drivers. Exercise login, account Settings, persistence, colored scrollback, authorization, root wipe and repair in isolated QEMU; existing VMs still require a backed-up hardware/firmware migration. Native HTTP/TLS updates remain unsupported.
+- Begin an independent ARM64 BIOS prototype with no EDK II dependencies: native reset/exception code, a firmware-resident serial recovery menu, read-only VirtIO-MMIO/GPT/FAT access, and bounded native ELF handoff. Add host parser tests and diskless/disposable-disk QEMU smoke tests. This is not yet compatible with the current EFI OS or the working UTM VM's graphical/PCI configuration; the existing firmware is retained.
+- Add pre-OS `partition delete N` with administrator password re-authentication, multi-factor TinyGPT ownership checks, mirrored GPT verification, immediate session-state cleanup, explicit non-secure-erasure warnings, and a mandatory firmware-enumeration reboot boundary.
+- Add a global account system with first-administrator setup, per-boot login, standard and Administrator roles, masked password entry, account management in Settings, and redundant recovery-volume persistence.
+
 ### Changed
 
+- Restore the former console's original 8×19 font bitmaps in the native renderer without bringing back EDK II firmware; retain license/provenance, original pixel rows, and correct scroll bounds.
+- Add native held-arrow repeat (400 ms delay, 20 Hz), stop on release, prioritize queued releases, and avoid catch-up bursts or synthesizing printable/password keys. Verify timing in native C and held-key scrolling/release in QEMU.
+- Preserve default/accent text roles, custom backgrounds, and active output styling during scrollback redraw; recolor retained history with the current Settings theme. Add executable C regression coverage for scrolling, wrapping, eviction, and theme changes.
+- Stop silently recreating deleted system files during normal startup; only factory installation or explicit recovery repair creates missing defaults.
+- Move account listing, creation/deletion, and password changes into Settings > User accounts with role-aware menus; remove the `users`, `useradd`, `passwd`, and `userdel` shell commands while keeping `logout`.
+- Replace literal destructive confirmation phrases and the boot-scoped `protect unlock` state with Administrator password re-authentication for protected writes, updates, root wipe, partition changes, repair, and reset.
+- Store only per-account salted 4096-round SHA-256 password hashes, using UEFI RNG salts with a bounded uniqueness fallback, constant-time verification, and fail-closed corrupt-database handling; reject non-empty databases with no Administrator.
+- Reject overlong usernames and passwords instead of silently accepting a truncated prefix, explicitly erase credential buffers, and document the limits of redundant account slots and offline protection.
+- Verify first-account setup and account changes using executable C tests; distinguish missing account files from read errors, and fail closed on account write/flush failures.
+- Correct direct FAT path construction so separators are appended independently of filename validation, with native nested-path regression tests.
+- Reuse deleted partition extents with validated 1 MiB-aligned first-fit allocation while preserving GPT bounds, existing extents, partition 1, and the recovery volume.
+- Harden mirrored GPT commits by validating both entry arrays and flushing and reading back the backup copy before the primary copy.
 - Replace complete `TINYFS0.BIN`/`TINYFS1.BIN` working snapshots with authoritative individual FAT files and directories under `TINYGPTFS/ROOT`; RAM now holds bounded metadata and transient I/O/editor buffers only.
 - Journal direct file replacement, delete, and rename operations through checked UEFI writes, flushes, redundant recovery manifests, and recovery metadata, and report persistence failures instead of treating cache mutations as saved.
 - Import the newest fully valid legacy snapshot once when direct storage is absent, rejecting malformed or case-colliding trees, retiring legacy authority with durable `TINYFS.RET`, and removing legacy files only after the direct tree and markers verify.
 - Describe file hashes honestly as observational scan-time metadata rather than persisted content-integrity trust anchors.
 - Retire whole-filesystem snapshot rollback; recovery now validates the direct marker/tree/journal, repairs missing defaults without overwriting existing files, and offers explicit reset.
 - Keep the RAM-resident shell running after `rm -rf /` erases the system partition instead of powering off automatically; partial wipes retain an open storage handle for retry.
+
+### Removed
+
+- Remove the obsolete pre-OS `rollback N` command; direct FAT storage has no whole-filesystem snapshots.
 
 ## [0.1.6] - 2026-09-04
 

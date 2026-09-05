@@ -34,7 +34,11 @@ typedef struct {
     EFI_BLOCK_IO_PROTOCOL *io;
     UINT8 primary[GPT_SECTOR_SIZE];
     UINT8 backup[GPT_SECTOR_SIZE];
+    UINT8 originalPrimary[GPT_SECTOR_SIZE];
+    UINT8 originalBackup[GPT_SECTOR_SIZE];
     UINT8 *entries;
+    UINT8 *originalEntries;
+    UINT8 *verifyEntries;
     UINTN entryBytes;
     UINT32 entryCount;
     UINT32 entrySize;
@@ -124,6 +128,8 @@ static EFI_STATUS partition_write_blocks(EFI_BLOCK_IO_PROTOCOL *io, UINT64 lba, 
 
 static void partition_disk_close(PARTITION_DISK *disk) {
     if (disk->entries) gST->BootServices->FreePool(disk->entries);
+    if (disk->originalEntries) gST->BootServices->FreePool(disk->originalEntries);
+    if (disk->verifyEntries) gST->BootServices->FreePool(disk->verifyEntries);
     memory_zero(disk, sizeof(*disk));
 }
 
@@ -159,22 +165,44 @@ static int partition_disk_open(PARTITION_DISK *disk) {
     disk->primaryEntriesLba = partition_read_u64(disk->primary + 72U);
     disk->backupEntriesLba = partition_read_u64(disk->backup + 72U);
     if (!disk->entryCount || disk->entryCount > GPT_ENTRY_LIMIT ||
-        disk->entrySize != GPT_ENTRY_SIZE) { gPartitionError = 22U; return 0; }
+        disk->entrySize != GPT_ENTRY_SIZE ||
+        partition_read_u32(disk->backup + 80U) != disk->entryCount ||
+        partition_read_u32(disk->backup + 84U) != disk->entrySize ||
+        partition_read_u64(disk->primary + 32U) != disk->io->Media->LastBlock ||
+        partition_read_u64(disk->backup + 32U) != 1U ||
+        partition_read_u64(disk->primary + 40U) != partition_read_u64(disk->backup + 40U) ||
+        partition_read_u64(disk->primary + 48U) != partition_read_u64(disk->backup + 48U)) {
+        gPartitionError = 22U; return 0;
+    }
     disk->entryBytes = (UINTN)disk->entryCount * disk->entrySize;
-    if (gST->BootServices->AllocatePool(2, disk->entryBytes, (void **)&disk->entries) != EFI_SUCCESS) {
-        gPartitionError = 23U;
-        return 0;
+    if (disk->entryBytes % GPT_SECTOR_SIZE ||
+        disk->primaryEntriesLba < 2U || disk->backupEntriesLba < 2U ||
+        disk->primaryEntriesLba + disk->entryBytes / GPT_SECTOR_SIZE >
+            partition_read_u64(disk->primary + 40U) ||
+        partition_read_u64(disk->primary + 48U) >= disk->backupEntriesLba ||
+        disk->primaryEntriesLba + disk->entryBytes / GPT_SECTOR_SIZE > disk->io->Media->LastBlock ||
+        disk->backupEntriesLba + disk->entryBytes / GPT_SECTOR_SIZE > disk->io->Media->LastBlock ||
+        gST->BootServices->AllocatePool(2, disk->entryBytes, (void **)&disk->entries) != EFI_SUCCESS ||
+        gST->BootServices->AllocatePool(2, disk->entryBytes, (void **)&disk->originalEntries) != EFI_SUCCESS ||
+        gST->BootServices->AllocatePool(2, disk->entryBytes, (void **)&disk->verifyEntries) != EFI_SUCCESS) {
+        partition_disk_close(disk); gPartitionError = 23U; return 0;
     }
     if (partition_read_blocks(disk->io, disk->primaryEntriesLba, disk->entryBytes,
-            disk->entries) != EFI_SUCCESS) {
+            disk->entries) != EFI_SUCCESS ||
+        partition_read_blocks(disk->io, disk->backupEntriesLba, disk->entryBytes,
+            disk->originalEntries) != EFI_SUCCESS) {
         partition_disk_close(disk); gPartitionError = 24U; return 0;
     }
-    if (partition_read_u32(disk->primary + 88U) != partition_crc32(disk->entries, disk->entryBytes)) {
+    if (partition_read_u32(disk->primary + 88U) != partition_crc32(disk->entries, disk->entryBytes) ||
+        partition_read_u32(disk->backup + 88U) != partition_crc32(disk->originalEntries, disk->entryBytes) ||
+        !partition_bytes_equal(disk->entries, disk->originalEntries, disk->entryBytes)) {
         partition_disk_close(disk); gPartitionError = 25U; return 0;
     }
     if (!partition_bytes_equal(disk->entries + 16U, (const UINT8 *)&gRecoveryPartitionGuid, 16U)) {
         partition_disk_close(disk); gPartitionError = 26U; return 0;
     }
+    memory_copy(disk->originalPrimary, disk->primary, GPT_SECTOR_SIZE);
+    memory_copy(disk->originalBackup, disk->backup, GPT_SECTOR_SIZE);
     return 1;
 }
 
@@ -184,22 +212,55 @@ static void partition_refresh_header_crc(UINT8 *header) {
     partition_write_u32(header + 16U, partition_crc32(header, size));
 }
 
+static int partition_copy_matches(PARTITION_DISK *disk, UINT64 entriesLba,
+        UINT64 headerLba, const UINT8 *entries, const UINT8 *header) {
+    UINT8 verifyHeader[GPT_SECTOR_SIZE];
+    return partition_read_blocks(disk->io, entriesLba, disk->entryBytes,
+               disk->verifyEntries) == EFI_SUCCESS &&
+        partition_read_blocks(disk->io, headerLba, GPT_SECTOR_SIZE, verifyHeader) == EFI_SUCCESS &&
+        partition_bytes_equal(disk->verifyEntries, entries, disk->entryBytes) &&
+        partition_bytes_equal(verifyHeader, header, GPT_SECTOR_SIZE);
+}
+
+static int partition_restore_backup(PARTITION_DISK *disk) {
+    if (partition_write_blocks(disk->io, disk->backupEntriesLba, disk->entryBytes,
+            disk->originalEntries) != EFI_SUCCESS ||
+        partition_write_blocks(disk->io, disk->io->Media->LastBlock, GPT_SECTOR_SIZE,
+            disk->originalBackup) != EFI_SUCCESS ||
+        disk->io->FlushBlocks(disk->io) != EFI_SUCCESS) return 0;
+    return partition_copy_matches(disk, disk->backupEntriesLba, disk->io->Media->LastBlock,
+        disk->originalEntries, disk->originalBackup);
+}
+
 static int partition_disk_commit(PARTITION_DISK *disk) {
     UINT32 entriesCrc = partition_crc32(disk->entries, disk->entryBytes);
     partition_write_u32(disk->primary + 88U, entriesCrc);
     partition_write_u32(disk->backup + 88U, entriesCrc);
     partition_refresh_header_crc(disk->primary);
     partition_refresh_header_crc(disk->backup);
-    /* Backup first: a power failure never destroys the last complete primary table. */
+
+    /* Commit and verify the backup mirror before touching the primary mirror. */
     if (partition_write_blocks(disk->io, disk->backupEntriesLba, disk->entryBytes,
             disk->entries) != EFI_SUCCESS ||
         partition_write_blocks(disk->io, disk->io->Media->LastBlock, GPT_SECTOR_SIZE,
-            disk->backup) != EFI_SUCCESS ||
-        partition_write_blocks(disk->io, disk->primaryEntriesLba, disk->entryBytes,
-            disk->entries) != EFI_SUCCESS ||
-        partition_write_blocks(disk->io, 1U, GPT_SECTOR_SIZE, disk->primary) != EFI_SUCCESS)
+            disk->backup) != EFI_SUCCESS || disk->io->FlushBlocks(disk->io) != EFI_SUCCESS ||
+        !partition_copy_matches(disk, disk->backupEntriesLba, disk->io->Media->LastBlock,
+            disk->entries, disk->backup)) {
+        gPartitionError = partition_restore_backup(disk) ? 30U : 31U;
         return 0;
-    return disk->io->FlushBlocks(disk->io) == EFI_SUCCESS;
+    }
+
+    /* A failure from this point is indeterminate: at least one new mirror is durable. */
+    if (partition_write_blocks(disk->io, disk->primaryEntriesLba, disk->entryBytes,
+            disk->entries) != EFI_SUCCESS ||
+        partition_write_blocks(disk->io, 1U, GPT_SECTOR_SIZE, disk->primary) != EFI_SUCCESS ||
+        disk->io->FlushBlocks(disk->io) != EFI_SUCCESS ||
+        !partition_copy_matches(disk, disk->primaryEntriesLba, 1U,
+            disk->entries, disk->primary)) {
+        gPartitionError = 31U;
+        return 0;
+    }
+    return 1;
 }
 
 static int partition_label_valid(const char *input, char output[12]) {
@@ -300,34 +361,279 @@ static void partition_set_gpt_name(UINT8 *entry, const char *label) {
         partition_write_u16(entry + 56U + index * 2U, (UINT16)(UINT8)label[index]);
 }
 
+static int partition_align_lba(UINT64 value, UINT64 *alignedOut) {
+    if (value > ~0ULL - (GPT_ALIGNMENT_SECTORS - 1ULL)) return 0;
+    *alignedOut = (value + GPT_ALIGNMENT_SECTORS - 1ULL) & ~(GPT_ALIGNMENT_SECTORS - 1ULL);
+    return 1;
+}
+
+static int partition_table_extents_valid(PARTITION_DISK *disk) {
+    UINT64 firstUsable = partition_read_u64(disk->primary + 40U);
+    UINT64 lastUsable = partition_read_u64(disk->primary + 48U);
+    UINTN left;
+    if (firstUsable > lastUsable) return 0;
+    for (left = 0; left < disk->entryCount; left++) {
+        UINT8 *leftEntry = disk->entries + left * disk->entrySize;
+        UINT64 leftStart;
+        UINT64 leftEnd;
+        UINTN right;
+        if (partition_entry_empty(leftEntry)) continue;
+        leftStart = partition_read_u64(leftEntry + 32U);
+        leftEnd = partition_read_u64(leftEntry + 40U);
+        if (leftStart < firstUsable || leftEnd > lastUsable || leftStart > leftEnd) return 0;
+        for (right = left + 1U; right < disk->entryCount; right++) {
+            UINT8 *rightEntry = disk->entries + right * disk->entrySize;
+            UINT64 rightStart;
+            UINT64 rightEnd;
+            if (partition_entry_empty(rightEntry)) continue;
+            rightStart = partition_read_u64(rightEntry + 32U);
+            rightEnd = partition_read_u64(rightEntry + 40U);
+            if (rightStart < firstUsable || rightEnd > lastUsable || rightStart > rightEnd ||
+                !(leftEnd < rightStart || rightEnd < leftStart)) return 0;
+        }
+    }
+    return 1;
+}
+
+static int partition_first_fit(PARTITION_DISK *disk, UINT64 sectors, UINT64 *startOut) {
+    UINT64 cursor;
+    UINT64 lastUsable = partition_read_u64(disk->primary + 48U);
+    if (!sectors || !partition_table_extents_valid(disk) ||
+        !partition_align_lba(partition_read_u64(disk->primary + 40U), &cursor)) return 0;
+    for (;;) {
+        UINT64 nextStart = ~0ULL;
+        UINT64 nextEnd = 0;
+        UINTN index;
+        for (index = 0; index < disk->entryCount; index++) {
+            UINT8 *entry = disk->entries + index * disk->entrySize;
+            UINT64 start;
+            UINT64 end;
+            if (partition_entry_empty(entry)) continue;
+            start = partition_read_u64(entry + 32U);
+            end = partition_read_u64(entry + 40U);
+            if (end >= cursor && start < nextStart) {
+                nextStart = start;
+                nextEnd = end;
+            }
+        }
+        if (nextStart == ~0ULL) {
+            if (cursor <= lastUsable && sectors - 1U <= lastUsable - cursor) {
+                *startOut = cursor;
+                return 1;
+            }
+            return 0;
+        }
+        if (cursor < nextStart && sectors <= nextStart - cursor) {
+            *startOut = cursor;
+            return 1;
+        }
+        if (nextEnd == ~0ULL || !partition_align_lba(nextEnd + 1U, &cursor) || cursor > lastUsable)
+            return 0;
+    }
+}
+
+static int partition_gpt_name_matches(const UINT8 *entry, const char *label) {
+    UINTN index;
+    for (index = 0; index < 36U; index++) {
+        UINT16 value = (UINT16)entry[56U + index * 2U] |
+            ((UINT16)entry[57U + index * 2U] << 8);
+        UINT8 expected = label[index] ? (UINT8)label[index] : 0U;
+        if (value != expected) return 0;
+        if (!expected) {
+            for (index++; index < 36U; index++)
+                if (entry[56U + index * 2U] || entry[57U + index * 2U]) return 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int partition_fat_label_matches(PARTITION_DISK *disk, UINT64 start,
+        UINT64 extentSectors, const char *label) {
+    UINT8 sector[GPT_SECTOR_SIZE];
+    UINT32 bytesPerSector;
+    UINT32 sectorsPerCluster;
+    UINT32 reserved;
+    UINT32 fats;
+    UINT32 rootEntries;
+    UINT32 fatSectors;
+    UINT32 totalSectors;
+    UINT64 rootSectors;
+    UINT64 metadataSectors;
+    UINTN labelOffset;
+    UINTN index;
+    if (partition_read_blocks(disk->io, start, GPT_SECTOR_SIZE, sector) != EFI_SUCCESS ||
+        sector[510] != 0x55U || sector[511] != 0xaaU) return 0;
+    bytesPerSector = (UINT32)sector[11] | ((UINT32)sector[12] << 8);
+    sectorsPerCluster = sector[13];
+    reserved = (UINT32)sector[14] | ((UINT32)sector[15] << 8);
+    fats = sector[16];
+    rootEntries = (UINT32)sector[17] | ((UINT32)sector[18] << 8);
+    totalSectors = (UINT32)sector[19] | ((UINT32)sector[20] << 8);
+    if (!totalSectors) totalSectors = partition_read_u32(sector + 32U);
+    fatSectors = (UINT32)sector[22] | ((UINT32)sector[23] << 8);
+    if (bytesPerSector != GPT_SECTOR_SIZE || !sectorsPerCluster ||
+        (sectorsPerCluster & (sectorsPerCluster - 1U)) != 0U || sectorsPerCluster > 128U ||
+        !reserved || !fats || !totalSectors || (UINT64)totalSectors > extentSectors) return 0;
+    if (rootEntries) {
+        if (!fatSectors) return 0;
+        labelOffset = 43U;
+    } else {
+        UINT32 rootCluster;
+        fatSectors = partition_read_u32(sector + 36U);
+        rootCluster = partition_read_u32(sector + 44U);
+        if (!fatSectors || rootCluster < 2U) return 0;
+        labelOffset = 71U;
+    }
+    rootSectors = ((UINT64)rootEntries * 32U + GPT_SECTOR_SIZE - 1U) / GPT_SECTOR_SIZE;
+    metadataSectors = (UINT64)reserved + (UINT64)fats * fatSectors + rootSectors;
+    if (metadataSectors >= totalSectors) return 0;
+    if (!rootEntries) {
+        UINT64 rootCluster = partition_read_u32(sector + 44U);
+        UINT64 rootOffset = metadataSectors + (rootCluster - 2U) * sectorsPerCluster;
+        if (rootOffset >= totalSectors || sectorsPerCluster > totalSectors - rootOffset) return 0;
+    }
+    for (index = 0; index < 11U; index++) {
+        UINT8 expected = label[index] ? (UINT8)label[index] : (UINT8)' ';
+        if (sector[labelOffset + index] != expected) return 0;
+    }
+    return 1;
+}
+
+static int partition_entry_is_managed_fat(PARTITION_DISK *disk, UINTN partition,
+        UINT64 *startOut, UINT64 *endOut) {
+    UINT8 *entry;
+    UINT64 start;
+    UINT64 end;
+    char normalized[12];
+    if (partition < 2U || partition > PARTITION_MAX || partition > disk->entryCount ||
+        !gPartitionNames[partition - 1U][0] ||
+        !partition_label_valid(gPartitionNames[partition - 1U], normalized) ||
+        !streq(normalized, gPartitionNames[partition - 1U]) ||
+        !partition_table_extents_valid(disk)) return 0;
+    entry = disk->entries + (partition - 1U) * disk->entrySize;
+    if (partition_entry_empty(entry) ||
+        !partition_bytes_equal(entry, (const UINT8 *)&gFatPartitionGuid, 16U) ||
+        partition_bytes_equal(entry + 16U, (const UINT8 *)&gRecoveryPartitionGuid, 16U) ||
+        !partition_gpt_name_matches(entry, normalized)) return 0;
+    start = partition_read_u64(entry + 32U);
+    end = partition_read_u64(entry + 40U);
+    if (!partition_fat_label_matches(disk, start, end - start + 1U, normalized)) return 0;
+    if (startOut) *startOut = start;
+    if (endOut) *endOut = end;
+    return 1;
+}
+
+static int partition_delete_validate(UINTN partition, UINT64 *startOut, UINT64 *endOut) {
+    PARTITION_DISK disk;
+    int valid;
+    gPartitionError = 0;
+    if (partition < 2U || partition > PARTITION_MAX) { gPartitionError = 40U; return 0; }
+    if (gPartitionRebootRequired) { gPartitionError = 6U; return 0; }
+    if (!partition_disk_open(&disk)) return 0;
+    valid = partition_entry_is_managed_fat(&disk, partition, startOut, endOut);
+    partition_disk_close(&disk);
+    if (!valid) gPartitionError = 41U;
+    return valid;
+}
+
+static UINTN partition_delete_fallback(UINTN removed) {
+    UINTN partition;
+    if (removed != 2U && gPartitionNames[1][0] && gPartitionRoots[1]) return 2U;
+    for (partition = 2U; partition <= PARTITION_MAX; partition++)
+        if (partition != removed && gPartitionNames[partition - 1U][0] &&
+            gPartitionRoots[partition - 1U]) return partition;
+    return 1U;
+}
+
+/* Return 2 when GPT deletion committed but recovery-registry cleanup failed. */
+static int partition_delete(UINTN partition) {
+    PARTITION_DISK disk;
+    EFI_FILE_PROTOCOL *removedRoot;
+    UINTN oldDefault;
+    UINTN fallback;
+    int defaultChanged;
+    UINT8 *entry;
+    if (!partition_delete_validate(partition, (UINT64 *)0, (UINT64 *)0)) return 0;
+    if (!partition_disk_open(&disk)) return 0;
+    if (!partition_entry_is_managed_fat(&disk, partition, (UINT64 *)0, (UINT64 *)0)) {
+        partition_disk_close(&disk); gPartitionError = 41U; return 0;
+    }
+    removedRoot = gPartitionRoots[partition - 1U];
+    if (removedRoot == gBootVolumeRoot) {
+        partition_disk_close(&disk); gPartitionError = 41U; return 0;
+    }
+    oldDefault = boot_order_default_partition();
+    fallback = partition_delete_fallback(partition);
+    defaultChanged = oldDefault == partition;
+    if (defaultChanged && !boot_order_save(fallback)) {
+        partition_disk_close(&disk); gPartitionError = 42U; return 0;
+    }
+
+    if (gActivePartition == partition) {
+        if (fallback >= 2U) {
+            (void)storage_activate_partition(fallback);
+            (void)storage_mount_latest();
+        } else {
+            gVolumeRoot = (EFI_FILE_PROTOCOL *)0;
+            gActivePartition = 1U;
+            gDedicatedStorage = 0U;
+            gCwd = FS_ROOT;
+            gPreviousCwd = FS_ROOT;
+            gGeneration = 0;
+            gTransactionCorrupt = 0;
+            memory_zero(gNodes, sizeof(gNodes));
+        }
+    }
+    if (removedRoot && removedRoot->Close(removedRoot) != EFI_SUCCESS) {
+        partition_disk_close(&disk);
+        gPartitionError = defaultChanged && !boot_order_save(oldDefault) ? 45U : 43U;
+        return 0;
+    }
+    gPartitionRoots[partition - 1U] = (EFI_FILE_PROTOCOL *)0;
+
+    entry = disk.entries + (partition - 1U) * disk.entrySize;
+    memory_zero(entry, GPT_ENTRY_SIZE);
+    if (!partition_disk_commit(&disk)) {
+        UINTN commitError = gPartitionError;
+        partition_disk_close(&disk);
+        /* The GPT may be restored, but the target root was already closed. */
+        gPartitionRebootRequired = 1U;
+        if (commitError != 31U && defaultChanged && !boot_order_save(oldDefault))
+            commitError = 46U;
+        gPartitionError = commitError;
+        return 0;
+    }
+    partition_disk_close(&disk);
+    gPartitionRebootRequired = 1U;
+    memory_zero(gPartitionNames[partition - 1U], sizeof(gPartitionNames[partition - 1U]));
+    if (!partition_registry_save()) {
+        /* The in-memory view stays deleted; PARTS.CFG may require recovery. */
+        gPartitionError = 44U;
+        return 2;
+    }
+    return 1;
+}
+
 static int partition_add(UINT32 mebibytes, const char *requestedLabel, UINTN *partitionOut) {
     PARTITION_DISK disk;
     UINT8 *entry = (UINT8 *)0;
     char label[12];
     UINTN index;
     UINTN slot = PARTITION_MAX;
-    UINT64 maxEnd = 0;
-    UINT64 start;
+    UINT64 start = 0;
     UINT64 sectors = (UINT64)mebibytes * 2048ULL;
-    UINT64 lastUsable;
     EFI_GUID unique;
     gPartitionError = 0;
+    if (gPartitionRebootRequired) { gPartitionError = 6U; return 0; }
     if (mebibytes < 4U || !partition_label_valid(requestedLabel, label) ||
         !partition_label_unique(label, 0U)) { gPartitionError = 1U; return 0; }
     if (!partition_disk_open(&disk)) return 0;
-    for (index = 0; index < disk.entryCount; index++) {
+    for (index = 1U; index < disk.entryCount && index < PARTITION_MAX; index++) {
         UINT8 *candidate = disk.entries + index * disk.entrySize;
-        UINT64 end;
-        if (partition_entry_empty(candidate)) {
-            if (index >= 2U && index < PARTITION_MAX && slot == PARTITION_MAX) slot = index;
-            continue;
-        }
-        end = partition_read_u64(candidate + 40U);
-        if (end > maxEnd) maxEnd = end;
+        if (partition_entry_empty(candidate) && slot == PARTITION_MAX) slot = index;
     }
-    lastUsable = partition_read_u64(disk.primary + 48U);
-    start = (maxEnd + GPT_ALIGNMENT_SECTORS) & ~(GPT_ALIGNMENT_SECTORS - 1ULL);
-    if (slot == PARTITION_MAX || !sectors || start > lastUsable || sectors - 1U > lastUsable - start) {
+    if (slot == PARTITION_MAX || !partition_first_fit(&disk, sectors, &start)) {
         partition_disk_close(&disk);
         gPartitionError = 2U;
         return 0;
@@ -355,10 +661,12 @@ static int partition_add(UINT32 mebibytes, const char *requestedLabel, UINTN *pa
     partition_set_gpt_name(entry, label);
     if (!partition_disk_commit(&disk)) {
         partition_disk_close(&disk);
-        gPartitionError = 4U;
+        if (gPartitionError != 30U && gPartitionError != 31U) gPartitionError = 4U;
+        if (gPartitionError == 31U) gPartitionRebootRequired = 1U;
         return 0;
     }
     partition_disk_close(&disk);
+    gPartitionRebootRequired = 1U;
     string_copy(gPartitionNames[slot], label, sizeof(gPartitionNames[slot]));
     if (!partition_registry_save()) { gPartitionError = 5U; return 0; }
     if (partitionOut) *partitionOut = slot + 1U;
@@ -370,7 +678,17 @@ static const char *partition_error_text(void) {
     if (gPartitionError == 2U) return "no aligned free extent or GPT slot can hold that size";
     if (gPartitionError == 3U) return "the new FAT filesystem could not be written";
     if (gPartitionError == 4U) return "the mirrored GPT transaction could not be committed";
-    if (gPartitionError == 5U) return "partition created, but its recovery registry entry could not be saved";
+    if (gPartitionError == 5U) return "partition created, but its recovery registry entry could not be saved; reboot and do not reuse the slot";
+    if (gPartitionError == 6U) return "reboot is required before further partition changes";
+    if (gPartitionError == 30U) return "the original GPT was restored, but the target handle is closed; reboot required before retrying";
+    if (gPartitionError == 31U) return "indeterminate GPT state; stop partition operations and reboot into recovery immediately";
+    if (gPartitionError == 40U) return "partition 1 is protected recovery storage; use a number from 2 through 16";
+    if (gPartitionError == 41U) return "target is absent, unregistered, malformed, or not a TinyGPT-managed FAT partition";
+    if (gPartitionError == 42U) return "the default boot fallback could not be saved; nothing was deleted";
+    if (gPartitionError == 43U) return "the mounted filesystem handle could not be closed; nothing was deleted";
+    if (gPartitionError == 44U) return "partition deleted, but registry cleanup failed; do not reuse the slot and reboot into recovery";
+    if (gPartitionError == 45U) return "nothing was deleted, but the prior default boot selection could not be restored";
+    if (gPartitionError == 46U) return "the original GPT was restored, but the target handle is closed and the prior default could not be restored; reboot required";
     return "the TinyGPT boot disk is unavailable, read-only, or has an unsupported GPT layout";
 }
 
@@ -430,7 +748,7 @@ static int partition_rename(UINTN partition, const char *requestedLabel) {
     UINT8 *entry;
     UINT64 start;
     char label[12];
-    if (partition < 2U || partition > PARTITION_MAX ||
+    if (gPartitionRebootRequired || partition < 2U || partition > PARTITION_MAX ||
         !partition_label_valid(requestedLabel, label) ||
         !partition_label_unique(label, partition) || !partition_disk_open(&disk)) return 0;
     if (partition > disk.entryCount) {
@@ -444,7 +762,13 @@ static int partition_rename(UINTN partition, const char *requestedLabel) {
     }
     start = partition_read_u64(entry + 32U);
     partition_set_gpt_name(entry, label);
-    if (!partition_disk_commit(&disk) || !partition_update_fat_label(&disk, start, label)) {
+    if (!partition_disk_commit(&disk)) {
+        if (gPartitionError == 31U) gPartitionRebootRequired = 1U;
+        partition_disk_close(&disk);
+        return 0;
+    }
+    gPartitionRebootRequired = 1U;
+    if (!partition_update_fat_label(&disk, start, label)) {
         partition_disk_close(&disk);
         return 0;
     }

@@ -432,8 +432,8 @@ static int editor_file_picker(char *path, UINTN capacity) {
             } else notice = "Already at the filesystem root.";
         } else if (key.UnicodeChar == 'n' || key.UnicodeChar == 'N' ||
                    ((key.UnicodeChar == '\r' || key.UnicodeChar == '\n') && !selected)) {
-            if (fs_is_protected(directory) && !gProtectionUnlocked) {
-                notice = "Protected directory: run 'protect unlock' before creating a file here.";
+            if (fs_is_protected(directory) && !auth_session_is_admin()) {
+                notice = "Protected directory: authenticate as an administrator before creating a file here.";
             } else if (editor_new_file_modal(directory, path, capacity)) return 1;
             else {
                 editor_screen_reset();
@@ -516,7 +516,7 @@ static void command_textedit(const char *command) {
         string_copy(displayPath, requestedPath, sizeof(displayPath));
         gEditorBuffer[0] = 0;
     }
-    readOnly = fs_is_protected(node >= 0 ? (UINTN)node : parent) && !gProtectionUnlocked;
+    readOnly = fs_is_protected(node >= 0 ? (UINTN)node : parent) && !auth_session_is_admin();
     editor_screen_reset();
 
     for (;;) {
@@ -536,7 +536,12 @@ static void command_textedit(const char *command) {
         if (key.ScanCode == EDITOR_SCAN_F2 || key.UnicodeChar == 19U) {
             int saved;
             if (readOnly) {
-                notice = "Read-only: exit, run 'protect unlock', then reopen to edit.";
+                notice = "Read-only: exit, authenticate as an administrator, then reopen to edit.";
+                continue;
+            }
+            if (fs_is_protected(node >= 0 ? (UINTN)node : parent) &&
+                !auth_authorize_admin("protected editor save")) {
+                notice = "Administrator authentication failed; file not saved.";
                 continue;
             }
             saved = editor_save(&node, parent, newName, length);
@@ -563,7 +568,7 @@ static void command_textedit(const char *command) {
                 gEditorBuffer, length, cursor, screenColumns, 1
             );
         } else if (readOnly && (key.ScanCode == EDITOR_SCAN_DELETE || key.UnicodeChar)) {
-            notice = "Read-only: exit, run 'protect unlock', then reopen to edit.";
+            notice = "Read-only: exit, authenticate as an administrator, then reopen to edit.";
         } else if (key.ScanCode == EDITOR_SCAN_DELETE) {
             if (cursor < length) {
                 editor_delete(gEditorBuffer, &length, cursor);
