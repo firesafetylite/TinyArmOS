@@ -151,6 +151,8 @@ protect lock
 
 Unlocking lasts only for the current boot. Creation, writes, copies, moves, renames, and removals all enforce ancestor protection.
 
+After protection is unlocked, exact `rm -rf /` erases the system partition but does not power off the machine. The already-loaded shell keeps running from RAM without persistent storage until it crashes, is rebooted, or is shut down. The isolated pre-OS environment opens on the next boot.
+
 ### Text Editor
 
 Open a file directly or launch the interactive picker:

@@ -293,7 +293,7 @@ class ShellSourceTests(unittest.TestCase):
         entry = SOURCE.split("EFI_STATUS EFIAPI EfiMain", 1)[1]
         self.assertEqual(entry.count("settings_apply_runtime();"), 1)
 
-    def test_exact_root_recursive_remove_destroys_os_but_leaves_pre_os(self) -> None:
+    def test_exact_root_recursive_remove_destroys_os_but_keeps_shell_running(self) -> None:
         remove_dispatch = source_block(
             '} else if (starts_with(command, "rm ")',
             '} else if (starts_with(command, "cp ")',
@@ -308,8 +308,11 @@ class ShellSourceTests(unittest.TestCase):
         self.assertIn("fs_remove_recursive(FS_ROOT);", root_branch)
         self.assertIn("storage_wipe_os(&removed, &failures);", root_branch)
         self.assertIn("gStorageReady = 0;", root_branch)
-        self.assertIn("ResetSystem(EfiResetShutdown", root_branch)
         self.assertIn("The pre-OS environment remains", root_branch)
+        self.assertIn("The running shell will continue from RAM", root_branch)
+        self.assertNotIn("ResetSystem(", root_branch)
+        self.assertNotIn("delay_ms(", root_branch)
+        self.assertNotIn('volatile("wfe")', root_branch)
         self.assertIn("rootRequest && !gProtectionUnlocked", remove_dispatch)
         self.assertIn("use 'protect unlock'", remove_dispatch)
         self.assertNotIn("read_line(", root_branch)

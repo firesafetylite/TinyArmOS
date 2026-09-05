@@ -2987,10 +2987,8 @@ static void run_command(char *line) {
             volume->Flush(volume);
             volume->Close(volume);
             print("TinyGPT files, snapshots, updater backups, and Freedoom data are gone.\n");
-            print("The pre-OS environment remains and will open at the next boot. Powering off.\n");
-            delay_ms(2000);
-            gST->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, (void *)0);
-            for (;;) __asm__ volatile("wfe");
+            print("The pre-OS environment remains and will open at the next boot.\n");
+            print("The running shell will continue from RAM without persistent storage.\n");
         } else if ((UINTN)node == FS_ROOT) print("remove: only exact rm -rf / can erase root\n");
         else if (fs_is_protected((UINTN)node) && !gProtectionUnlocked) print("remove: protected system node (use 'protect unlock')\n");
         else if (!recursive && directory && gNodes[node].type != FS_DIRECTORY) print("rmdir: not a directory\n");

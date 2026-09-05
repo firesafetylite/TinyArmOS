@@ -4,6 +4,10 @@ Notable changes to TinyGPT are documented here. This project follows [Keep a Cha
 
 ## [Unreleased]
 
+### Changed
+
+- Keep the RAM-resident shell running after `rm -rf /` erases the system partition instead of powering off automatically.
+
 ## [0.1.6] - 2026-09-04
 
 ### Added
